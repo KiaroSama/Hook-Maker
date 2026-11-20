@@ -66,7 +66,7 @@ function Fire {
 
 # Steps: 'prompt:<text>', 'skill:<key>', 'read:<path>', 'compact'.
 function New-VoiceTranscript {
-    param([string]$Name, [string[]]$Steps)
+    param([string]$Name, [string[]]$Steps, [string]$Closing = 'Done.')
     $entries = New-Object System.Collections.Generic.List[string]
     foreach ($s in @($Steps)) {
         if ($s -like 'prompt:*') { $doc = @{ type = 'user'; message = @{ role = 'user'; content = $s.Substring(7) } } }
@@ -78,7 +78,7 @@ function New-VoiceTranscript {
         else { $doc = @{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; name = 'Read'; input = @{ file_path = $s.Substring(5) } }) } } }
         [void]$entries.Add(($doc | ConvertTo-Json -Depth 8 -Compress))
     }
-    [void]$entries.Add((@{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'text'; text = 'Done.' }) } } | ConvertTo-Json -Depth 8 -Compress))
+    [void]$entries.Add((@{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'text'; text = $Closing }) } } | ConvertTo-Json -Depth 8 -Compress))
     $path = Join-Path $Work ($Name + '.jsonl')
     [System.IO.File]::WriteAllText($path, (($entries.ToArray() -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
     return $path
@@ -180,6 +180,10 @@ try {
     Check '106 5a: the comment finding is not refused twice' ($rCm2.Out -notmatch $blockPattern) $rCm2.Out
     $rCmOk = Fire -Cwd $wf -SessionId 'w-cm-ok' -TranscriptPath (New-VoiceTranscript 'w-cm-ok' @("prompt:$PersianPrompt", 'skill:anthropic-skills:persian', 'skill:humanizer:humanizer', "writec:$code|$commentAdd"))
     Check '106 5a: comment with humanizer loaded and qualified persian key -> silent' ($rCmOk.Out -eq '') ($rCmOk.Out + $rCmOk.Err)
+    $rCmUnlisted = Fire -Cwd $wf -SessionId 'w-cm-unlisted' -TranscriptPath (New-VoiceTranscript 'w-cm-unlisted' @("prompt:$PersianPrompt", 'skill:anthropic-skills:persian', 'skill:humanizer:humanizer', "writec:$code|$commentAdd") "Done.`nSkills used: anthropic-skills:persian")
+    Check '107 5a: comment with humanizer loaded but omitted from Skills used: -> blocks once' ($rCmUnlisted.Out -match $blockPattern -and $rCmUnlisted.Out -match 'Skills used:') ($rCmUnlisted.Out + $rCmUnlisted.Err)
+    $rCmListed = Fire -Cwd $wf -SessionId 'w-cm-listed' -TranscriptPath (New-VoiceTranscript 'w-cm-listed' @("prompt:$PersianPrompt", 'skill:anthropic-skills:persian', 'skill:humanizer:humanizer', "writec:$code|$commentAdd") "Done.`nSkills used: anthropic-skills:persian, humanizer:humanizer")
+    Check '107 5a: comment with humanizer loaded AND listed in Skills used: -> silent' ($rCmListed.Out -eq '') ($rCmListed.Out + $rCmListed.Err)
     $rCmCode = Fire -Cwd $wf -SessionId 'w-cm-code' -TranscriptPath (New-VoiceTranscript 'w-cm-code' @("prompt:$PersianPrompt", 'skill:persian', "writec:$code|Write-Host 'converts files for the user'"))
     Check '106 5a: code without comments is not judged' ($rCmCode.Out -eq '') $rCmCode.Out
 

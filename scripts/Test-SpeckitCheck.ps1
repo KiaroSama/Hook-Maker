@@ -267,7 +267,24 @@ try {
     Check 'CHAIN without speckit evidence -> blocked' ($r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -match 'no speckit-\* step') $r.Out
     $t = New-GateTranscript 'class-chain-ok' $classRoot 'add an export feature' @('src\a.ps1') @('speckit-implement')
     $r = Invoke-Class 'c8' $t "Spec Kit: CHAIN (implement)"
-    Check 'CHAIN with a speckit-* Skill call passes' ($r.Out.Trim() -eq '') $r.Out
+    Check 'CHAIN with speckit-implement before governed edits passes silently' ($r.Out.Trim() -eq '') $r.Out
+    # Order 107 step 5d: governed edit before speckit-implement in a CHAIN task gets one advisory (not a block).
+    $orderEntries = @(
+        (@{ type = 'user'; message = @{ role = 'user'; content = 'add an export feature' } } | ConvertTo-Json -Depth 8 -Compress),
+        (@{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; name = 'Edit'; input = @{ file_path = (Join-Path $classRoot 'src\early.ps1') } }) } } | ConvertTo-Json -Depth 8 -Compress),
+        (@{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; name = 'Skill'; input = @{ skill = 'speckit-implement' } }) } } | ConvertTo-Json -Depth 8 -Compress)
+    )
+    $tOrder = Join-Path $Work 'class-chain-order.jsonl'
+    [System.IO.File]::WriteAllText($tOrder, (($orderEntries -join "`n") + "`n"))
+    $r = Invoke-Class 'c8b' $tOrder "Spec Kit: CHAIN (specify -> implement)"
+    Check '107 5d: CHAIN edit before speckit-implement -> one advisory, not a block' (
+        $r.Out -notmatch '"decision"\s*:\s*"block"' -and $r.Out -match 'src/early\.ps1 edited before speckit-implement') $r.Out
+    $r = Invoke-Class 'c8b' $tOrder "Spec Kit: CHAIN (specify -> implement)"
+    Check '107 5d: the same pre-implement advisory is not repeated in one turn' ($r.Out.Trim() -eq '') $r.Out
+    $tNoImpl = New-GateTranscript 'class-chain-noimpl' $classRoot 'add an export feature' @('src\a.ps1') @('speckit-specify')
+    $r = Invoke-Class 'c8c' $tNoImpl "Spec Kit: CHAIN (specify)"
+    Check '107 5d: CHAIN edit with speckit-specify only (no speckit-implement) -> one advisory' (
+        $r.Out -notmatch '"decision"\s*:\s*"block"' -and $r.Out -match 'edited before speckit-implement') $r.Out
     $t = New-GateTranscript 'class-none' $classRoot 'what does this do?' @()
     $r = Invoke-Class 'c9' $t 'It routes hooks.'
     Check 'a turn without project edits has no classification duty' ($r.Out.Trim() -eq '') $r.Out

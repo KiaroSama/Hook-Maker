@@ -117,6 +117,7 @@ try {
         $rStart.Out -match 'minScore0.65 OR project:<slug> tags, never both') $rStart.Out
     Check 'start: recall is not policy or consent' (
         $rStart.Out -match 'Recall != canonical policy or consent') $rStart.Out
+    Check 'start: it names Synapse: none - <reason>' ($rStart.Out -match 'Synapse: none - <reason>') $rStart.Out
     Check 'start: nothing is written to stderr' ($rStart.Err -eq '') $rStart.Err
 
     Write-Host ''

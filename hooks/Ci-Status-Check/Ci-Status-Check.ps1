@@ -443,28 +443,32 @@ function Write-Block {
 # is not a passive note: the client re-invokes the model with it (observed
 # in Claude Code 2.1.260 on 2026-09-07 - a hook_additional_context transcript
 # entry followed by a fresh assistant turn seconds later, with no user input
-# between them). Emitted on every Stop, this notice therefore re-invoked the
-# agent on every Stop: it answered, stopped, was re-invoked, answered again,
-# until the user interrupted - and a billing blocker stays valid for a day
-# in every repository that has one. A Stop advisory is a soft block and is
-# bounded like one: the same (repo, sha, classification) is delivered once
-# per session; a new session, a new pushed commit or a changed blocker is
-# told again.
+# between them). A Stop advisory is bounded like a block: the same (repo, sha,
+# classification) is delivered once per session; a new session, a new pushed
+# commit or a changed blocker is told again.
 function Write-ExternalBlockerContext {
     param([string]$Classification, [string]$Reason, [string]$Sha7, [string]$RepoSlug, [string]$EventName)
-    # Router standing order (V94, owner global-github-bot-remediation-rules.md
-    # "CI blocked by billing"): a billing-blocked push must close with a local run
-    # of the same tool and "CI did not run; local run passed|failed". Missing ->
-    # blocks once per SHA. The line is read from the closing reply only.
+    # Router standing order (V94, global-github-bot-remediation-rules.md): a
+    # billing-blocked push requires a local tool run AND "CI did not run; local
+    # run passed|failed" in the closing reply; missing either blocks once.
     if ($Classification -eq 'account-billing' -and $EventName -eq 'Stop') {
         $closingText = $null
         if (Get-Command Get-ClosingAssistantText -ErrorAction SilentlyContinue) {
             $ev = Get-ClosingAssistantText -HookInput $hookInput
             if ($null -ne $ev -and $ev.Known) { $closingText = [string]$ev.Text }
         }
-        if ($null -ne $closingText -and $closingText -notmatch '(?i)CI did not run;[ \t]*local run (passed|failed)') {
-            $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $EventName -FindingFingerprint (Get-ShortHash ('billing-local|' + $RepoSlug + '|' + $Sha7)) -Condition 'required-workflow' -Reason ('CI did not run on ' + $Sha7 + ' (GitHub billing/spending limit). Run the same tool locally, then report "CI did not run; local run passed" or "... failed".')
-            exit $emit.ExitCode
+        if ($null -ne $closingText) {
+            $localRan = $true
+            if ($script:EvidenceLibReady) {
+                $te = Get-TranscriptToolEvidence -Path ([string](Get-Field $hookInput 'transcript_path')) -MaxBytes 20000000
+                if ($te.Ok -and -not $te.Partial) {
+                    $localRan = (@($te.Events | Where-Object { $_.Kind -eq 'shell' -and [string]$_.Value -notmatch '^\s*(?:cd\s+[^;&|]+[;&|]+\s*)*(?:git|gh)\b' }).Count -gt 0)
+                }
+            }
+            if (-not $localRan -or $closingText -notmatch '(?i)CI did not run;[ \t]*local run (passed|failed)') {
+                $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $EventName -FindingFingerprint (Get-ShortHash ('billing-local|' + $RepoSlug + '|' + $Sha7)) -Condition 'required-workflow' -Reason ('CI did not run on ' + $Sha7 + ' (GitHub billing/spending limit). Run the same tool locally, then report "CI did not run; local run passed" or "... failed".')
+                exit $emit.ExitCode
+            }
         }
     }
     $noticeStamp = ([string](Get-Field $hookInput 'session_id')) + '|' +

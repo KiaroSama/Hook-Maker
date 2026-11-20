@@ -61,9 +61,15 @@ if ($eventName -eq 'Stop') {
         $evidence = Get-TranscriptToolEvidence -Path $transcriptPath -MaxBytes $maxBytes
         # Partial means the request or the chain may sit in the unread part.
         if (-not $evidence.Ok -or $evidence.Partial) { exit 0 }
-        # Classification first (spec 041): every edited turn names its class, and an EXEMPT line has to be true.
+        # Classification first (spec 041/042): every edited turn names its class, an EXEMPT line has to be true, and CHAIN edits start in speckit-implement.
         $classFinding = if (Get-Command Get-SpecKitClassFinding -ErrorAction SilentlyContinue) { Get-SpecKitClassFinding -HookInput $hookInput -Events @($evidence.Events) -Cwd $cwd } else { $null }
-        if ($null -ne $classFinding -and (Test-NewGateFingerprint -Name 'SpeckitClass' -Cwd $cwd -Fingerprint $classFinding.Fingerprint)) {
+        if ($null -ne $classFinding -and $classFinding.Kind -eq 'order') {
+            if (Test-NewGateFingerprint -Name 'SpeckitOrder' -Cwd $cwd -Fingerprint $classFinding.Fingerprint) {
+                $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Speckit-Check' -FindingFingerprint $classFinding.Fingerprint -EventName $eventName -Message ('SPECKIT CHECK: ' + $classFinding.Detail + ' edited before speckit-implement in CHAIN; edits start in speckit-implement.') -Condition 'advisory'
+                exit $emit.ExitCode
+            }
+        }
+        elseif ($null -ne $classFinding -and (Test-NewGateFingerprint -Name 'SpeckitClass' -Cwd $cwd -Fingerprint $classFinding.Fingerprint)) {
             $classMessage = switch ($classFinding.Kind) {
                 'missing' { 'SPECKIT CHECK: this turn edited ' + [string]$classFinding.EditCount + ' project file(s) and the closing has no Spec Kit line. Add "Spec Kit: CHAIN (<route>)" or "Spec Kit: EXEMPT (question | review | small)".' }
                 'exempt' { 'SPECKIT CHECK: "Spec Kit: EXEMPT" but ' + $classFinding.Detail + '. Reclassify as CHAIN and run the chain, or correct the line.' }

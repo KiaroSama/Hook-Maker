@@ -60,7 +60,7 @@ $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 
 # ---- SessionStart: state both duties up front (FR-037-05) -------------------
 if ($eventName -eq 'SessionStart') {
-    $note = 'Synapse-Rules-Check: ENFORCED at Stop. (1) Before the first project edit: memory_digest once with tokenBudget, index id/type/preview then full task matches; memory_retrieve minScore0.65 OR project:<slug> tags, never both. (2) Before closing: memory_write durable facts/decisions/verified commands (entityKey/project tag), or end with `Synapse: no durable learning - <reason>`. Recall != canonical policy or consent; no secrets, no raw memory disclosure.'
+    $note = 'Synapse-Rules-Check: ENFORCED at Stop. (1) Before the first project edit: memory_digest once with tokenBudget, index id/type/preview then full task matches; memory_retrieve minScore0.65 OR project:<slug> tags, never both. (2) Before closing: memory_write durable facts/decisions/verified commands (entityKey/project tag), or end with `Synapse: none - <reason>`. Recall != canonical policy or consent; no secrets, no raw memory disclosure.'
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
     exit $emit.ExitCode
 }

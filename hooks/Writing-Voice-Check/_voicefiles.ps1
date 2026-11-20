@@ -61,7 +61,7 @@ function Get-VoiceCommentProse {
 # @(languages) whose skill is not in $Loaded, from $Artifacts (@{ Kind; Value }).
 # $Detect is the hook's own language detector, so both halves agree.
 function Get-VoiceArtifactLanguages {
-    param([object[]]$Artifacts, [Parameter(Mandatory = $true)][hashtable]$Loaded, [Parameter(Mandatory = $true)][scriptblock]$Detect, [string]$Cwd = '')
+    param([object[]]$Artifacts, [Parameter(Mandatory = $true)][hashtable]$Loaded, [Parameter(Mandatory = $true)][scriptblock]$Detect, [string]$Cwd = '', [switch]$All)
     $found = New-Object System.Collections.Generic.List[string]
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($item in @($Artifacts | Select-Object -Last 40)) {
@@ -79,7 +79,7 @@ function Get-VoiceArtifactLanguages {
         else { $prose = Get-VoiceCommandProse -Command ([string]$item.Value) }
         if ([string]::IsNullOrWhiteSpace($prose)) { continue }
         $language = [string](& $Detect $prose)
-        if ($language -ne '' -and -not $Loaded[$language] -and -not $found.Contains($language)) { [void]$found.Add($language) }
+        if ($language -ne '' -and ($All -or -not $Loaded[$language]) -and -not $found.Contains($language)) { [void]$found.Add($language) }
     }
     return @($found)
 }

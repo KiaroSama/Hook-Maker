@@ -128,15 +128,27 @@ try {
         }
     }
     # Router standing order (V94): comment/doc prose added to CODE files is a
-    # gate, not only an advisory - blocks once per (session, languages).
+    # gate - blocks once when its voice skill was not loaded or omitted from Skills used:.
     if (Get-Command Get-VoiceCommentProse -ErrorAction SilentlyContinue) {
         $codeWrites = @($artifacts | Where-Object { $_.Kind -eq 'write' -and [string]$_.Value -match $script:VoiceCodeFile })
-        $commentLangs = @(Get-VoiceArtifactLanguages -Artifacts $codeWrites -Loaded $loaded -Detect ${function:Get-VoiceLanguage} -Cwd $cwdText)
+        $allCommentLangs = @(Get-VoiceArtifactLanguages -Artifacts $codeWrites -Loaded $loaded -Detect ${function:Get-VoiceLanguage} -Cwd $cwdText -All)
+        $skillsValue = $null
+        if ($allCommentLangs.Count -gt 0 -and (Get-Command Get-TaskClosingEvidence -ErrorAction SilentlyContinue)) {
+            $closingEv = Get-TaskClosingEvidence -HookInput $hookInput
+            if ($null -ne $closingEv -and $closingEv.Known) {
+                $skillsDecl = Test-ClosingDeclaration -Text ([string]$closingEv.Text) -LabelPattern 'Skills[ \t]+used'
+                if ($skillsDecl.Present) { $skillsValue = [string]$skillsDecl.Value }
+            }
+        }
+        $commentLangs = @($allCommentLangs | Where-Object {
+            $bare = ($voiceMap[$_].Key -split ':')[-1]
+            (-not $loaded[$_]) -or ($null -ne $skillsValue -and $skillsValue -notmatch ('(?i)\b' + [regex]::Escape($bare) + '\b'))
+        })
         if ($commentLangs.Count -gt 0) {
-            $cfp = Get-ShortHash ($sessionId + '|comments|' + ($commentLangs -join ',') + '|' + [string]$compactions)
+            $cfp = Get-ShortHash ($sessionId + '|comments|' + ($commentLangs -join ',') + '|' + [string]$compactions + '|' + [string]($null -ne $skillsValue))
             if (Test-NewGateFingerprint -Name 'WritingVoiceComments' -Cwd $cwdText -Fingerprint $cfp) {
                 $keys = (@($commentLangs | ForEach-Object { $voiceMap[$_].Name + ' -> Skill `' + $voiceMap[$_].Key + '`' }) -join '; ')
-                $cmsg = 'WRITING VOICE CHECK: code comments/docstrings/help text were added in ' + $keys + ' with no load since ' + $(if ($compactions -gt 0) { 'the last compaction' } else { 'start' }) + '. Load it, re-check those comments, and list it in "Skills used:".'
+                $cmsg = 'WRITING VOICE CHECK: code comments/docstrings/help text were added in ' + $keys + ' with no load or "Skills used:" entry since ' + $(if ($compactions -gt 0) { 'the last compaction' } else { 'start' }) + '. Load it, re-check those comments, and list it in "Skills used:".'
                 exit (Write-StopBlockResult -HookInput $hookInput -HookName 'Writing-Voice-Check' -FindingFingerprint $cfp -EventName $eventName -Message $cmsg -Condition 'required-workflow').ExitCode
             }
         }

@@ -29,7 +29,7 @@ function Test-SpecKitTypedPrompt {
 }
 
 # Returns $null (no duty, or the line is consistent) or
-# @{ Kind = missing|exempt|chain; Detail; EditCount; Fingerprint }.
+# @{ Kind = missing|exempt|chain|order; Detail; EditCount; Fingerprint }.
 function Get-SpecKitClassFinding {
     param([Parameter(Mandatory = $true)]$HookInput, [object[]]$Events, [Parameter(Mandatory = $true)][string]$Cwd)
     $root = [IO.Path]::GetFullPath($Cwd).TrimEnd('\', '/') + '\'
@@ -38,12 +38,19 @@ function Get-SpecKitClassFinding {
     for ($i = 0; $i -lt $all.Count; $i++) {
         if ($all[$i].Kind -eq 'prompt' -and (Test-SpecKitTypedPrompt -Text ([string]$all[$i].Value))) { $start = $i + 1; $turnPrompt = [string]$all[$i].Value }
     }
-    $chainEvidence = $false
+    $chainEvidence = $false; $implementSeen = $false; $preImplementFile = ''
     $edited = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $sensitive = New-Object System.Collections.Generic.List[string]
     for ($i = 0; $i -lt $all.Count; $i++) {
         $item = $all[$i]
-        if ($item.Kind -eq 'skill' -and [string]$item.Value -match '(?i)(^|:)speckit-') { $chainEvidence = $true; continue }
+        if ($item.Kind -eq 'skill' -and [string]$item.Value -match '(?i)(^|:)speckit-') {
+            $chainEvidence = $true
+            if ([string]$item.Value -match '(?i)(^|:)speckit-implement$') { $implementSeen = $true }
+            continue
+        }
+        if ($item.Kind -eq 'read' -and [string]$item.Value -match '(?i)[\\/]speckit-implement[\\/]SKILL\.md$') {
+            $chainEvidence = $true; $implementSeen = $true; continue
+        }
         if ($item.Kind -ne 'write') { continue }
         $full = ''
         try { $full = [IO.Path]::GetFullPath($(if ([IO.Path]::IsPathRooted($item.Value)) { $item.Value } else { Join-Path $Cwd $item.Value })) } catch { continue }
@@ -51,6 +58,7 @@ function Get-SpecKitClassFinding {
         $relative = $full.Substring($root.Length)
         if ($relative -match '^(?i)(specs|\.specify)[\\/]') { $chainEvidence = $true; continue }
         if ($i -lt $start -or $relative -match '^(?i)(\.ai|\.claude|plans)[\\/]') { continue }
+        if (-not $implementSeen -and $preImplementFile -eq '') { $preImplementFile = ($relative -replace '\\', '/') }
         if ($edited.Add($full) -and $relative -match $script:SpecKitSensitivePath) { [void]$sensitive.Add(($relative -replace '\\', '/')) }
     }
     if ($edited.Count -eq 0) { return $null }
@@ -60,7 +68,10 @@ function Get-SpecKitClassFinding {
     $value = ([string]$declaration.Value).Trim()
     $kind = ''; $detail = ''
     if (-not $declaration.Present -or $value -notmatch '^(?i)(CHAIN|EXEMPT)\b') { $kind = 'missing' }
-    elseif ($value -match '^(?i)CHAIN\b') { if (-not $chainEvidence) { $kind = 'chain' } }
+    elseif ($value -match '^(?i)CHAIN\b') {
+        if (-not $chainEvidence) { $kind = 'chain' }
+        elseif ($preImplementFile -ne '') { $kind = 'order'; $detail = $preImplementFile }
+    }
     elseif ($value -match '(?i)\b(question|review)\b' -and $value -notmatch '(?i)\bsmall\b') { $kind = 'exempt'; $detail = 'it is a ' + $Matches[1].ToLowerInvariant() + ' turn that edited ' + [string]$edited.Count + ' project file(s)' }
     elseif ($edited.Count -ge 2) { $kind = 'exempt'; $detail = [string]$edited.Count + ' project files were edited' }
     elseif ($sensitive.Count -gt 0) { $kind = 'exempt'; $detail = $sensitive[0] + ' is CI, a manifest/lockfile or a rule file' }
