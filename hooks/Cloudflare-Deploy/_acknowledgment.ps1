@@ -169,11 +169,11 @@ function Invoke-DeploymentAcknowledgment {
         if($config-eq''){throw 'Deployment configuration missing.'}
         $null=Save-DeploymentAcknowledgment $Root $Client $Commit $config $state $EvidencePath $revalidate
         if($null-ne$log){try{$log.WriteLine('['+[DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss')+' UTC] [INFO] [ACK] Reviewed decision recorded; exit=0; no provider or CI verification.')}catch{[Console]::Error.WriteLine('Acknowledgment recorded; diagnostic file write failed.')}}
-        [Console]::Out.WriteLine('Reviewed deployment decision acknowledged; no deploy, provider verification or CI result performed.')
+        [Console]::Out.WriteLine('Deployment decision acknowledged; no deploy, provider check or CI performed.')
         return 0
     }catch{
         if($null-ne$log){try{$log.WriteLine('['+[DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss')+' UTC] [ERROR] [ACK] Validation/publication refused; originals retained; exit=1.')}catch{[Console]::Error.WriteLine('Acknowledgment diagnostic file write failed.')}}
-        [Console]::Error.WriteLine('Acknowledgment refused: verify clean SHA/client, bounded reviewed evidence. Originals retained.')
+        [Console]::Error.WriteLine('Acknowledgment refused: verify clean SHA/client, reviewed evidence. Originals kept.')
         return 1
     }finally{if($null-ne$log){try{$log.Dispose()}catch{[Console]::Error.WriteLine('Acknowledgment diagnostic file close failed.')}}}
 }

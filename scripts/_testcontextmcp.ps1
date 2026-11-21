@@ -130,7 +130,7 @@ function Invoke-McpGatewayRegression {
         $operationSession = 'operation-' + $operationIndex
         $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' $case[0] $operationSession)
         $parsed = $null; try { $parsed = $r.Out | ConvertFrom-Json } catch { }
-        Check ('pertinent operation route ' + $case[1]) ($r.Exit -eq 0 -and $r.Err -eq '' -and $null -ne $parsed -and $r.Out.Contains($case[1]) -and $r.Out.Contains($case[2]) -and $r.Out.Contains($case[3]) -and $r.Out.Contains('Hook grants no actions/spend; UNKNOWN: reconcile, no retry') -and $r.Out -notmatch '"decision"') $r.Out
+        Check ('pertinent operation route ' + $case[1]) ($r.Exit -eq 0 -and $r.Err -eq '' -and $null -ne $parsed -and $r.Out.Contains($case[1]) -and $r.Out.Contains($case[2]) -and $r.Out.Contains($case[3]) -and $r.Out.Contains('No actions/spend granted; UNKNOWN: reconcile') -and $r.Out -notmatch '"decision"') $r.Out
         $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' $case[0] $operationSession)
         Check ('unchanged operation quiet ' + $case[1]) ($r.Out -eq '') $r.Out
     }
@@ -160,7 +160,7 @@ function Invoke-McpGatewayRegression {
     $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpNoSum -SessionId 'mcp-b1')
     Check 'default MCP missing line is advisory, not continuation' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"|additionalContext') $r.Out
     Check 'the block names the servers it actually observed' ($r.Out -match 'Servers observed in this session: context7') $r.Out
-    Check 'the block names the exact single action that clears it' ($r.Out -match 'Final standalone actual servers:' -and $r.Out -match 'MCP used: context7' -and $r.Out -match 'Only material actual calls, not availability') $r.Out
+    Check 'the block names the exact single action that clears it' ($r.Out -match 'Final standalone actual servers:' -and $r.Out -match 'MCP used: context7' -and $r.Out -match 'Actual calls only') $r.Out
     # An unchanged failure blocks ONCE per session (global-hook-rules.md: a gate
     # must not loop on the same unchanged state).
     $r2 = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpNoSum -SessionId 'mcp-b1')

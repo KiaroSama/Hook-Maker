@@ -304,7 +304,7 @@ if ($ReportExternalBlocker) {
     $cwd = (Get-Location).Path
     $info = Get-PushedHeadInfo -Cwd $cwd
     if ($null -eq $info) {
-        [Console]::Error.WriteLine('-ReportExternalBlocker: pushed HEAD UNKNOWN at ' + $cwd + '; push exact commit, retry.')
+        [Console]::Error.WriteLine('-ReportExternalBlocker: pushed HEAD UNKNOWN (' + $cwd + '); push first.')
         exit 1
     }
     # Never record blind: the exact-SHA CI state must be queried and captured
@@ -314,7 +314,7 @@ if ($ReportExternalBlocker) {
     Initialize-DocsEvidenceCache -ScopeKey $script:CiApiScopeKey
     $snapshot = Get-CiRunSnapshot -RepoSlug $info.RepoSlug -Sha $info.Sha -ProjectRoot $cwd -Branch $info.Branch
     if ($null -eq $snapshot) {
-        [Console]::Error.WriteLine('-ReportExternalBlocker: gh/auth/API UNKNOWN; no exception. Verify access/network.')
+        [Console]::Error.WriteLine('-ReportExternalBlocker: gh/auth/API UNKNOWN.')
         exit 1
     }
     if ($snapshot.AllSuccess) {
@@ -322,7 +322,7 @@ if ($ReportExternalBlocker) {
         exit 1
     }
     if ($snapshot.FailedRuns.Count -gt 0) {
-        [Console]::Error.WriteLine('-ReportExternalBlocker: completed failure (' + ($snapshot.FailedRuns -join '; ') + '); repair tests/build/lint, not external.')
+        [Console]::Error.WriteLine('-ReportExternalBlocker: COMPLETED failure (' + ($snapshot.FailedRuns -join '; ') + ').')
         exit 1
     }
     $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
@@ -332,7 +332,7 @@ if ($ReportExternalBlocker) {
     [System.IO.File]::WriteAllLines($externalStatePath, @($info.Sha, $info.RepoSlug, $Classification, $reasonLine, $nowIso, $snapshot.Fingerprint, $nowIso))
     $sha7 = $info.Sha
     if ($sha7.Length -gt 7) { $sha7 = $sha7.Substring(0, 7) }
-    [Console]::Out.WriteLine('EXTERNAL CI blocker: ' + $info.RepoSlug + '@' + $sha7 + ' [' + $Classification + ']: ' + $reasonLine + '. State-bound; Stop retires on green/change; NOT verified/green.')
+    [Console]::Out.WriteLine('EXTERNAL CI blocker: ' + $info.RepoSlug + '@' + $sha7 + ' [' + $Classification + ']: ' + $reasonLine + '. NOT verified/green.')
     exit 0
 }
 
@@ -490,7 +490,7 @@ function Write-ExternalBlockerContext {
     $message = 'CI UNVERIFIED; recorded external blocker for ' +
         $RepoSlug + '@' + $Sha7 + ' [' + $Classification + ']: ' + $Reason +
         '. Report blocker, never green.' + "`n" +
-    'CI unavailable: final-tree guarded pass, UTC evidence .ai/TESTING_NOTES.md; recheck per task, no waiver.'
+    'CI unavailable: final-tree guarded pass, UTC evidence .ai/TESTING_NOTES.md; recheck per task.'
     $null = Write-HookResult -EventName $EventName -Kind 'advisory' -Message $message
     exit 0
 }
@@ -575,7 +575,7 @@ if ($null -eq $snapshot) {
     if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) { exit 0 }    # silent degradation: never claim verified
     $snapshot = Get-CiRunSnapshot -RepoSlug $repoSlug -Sha $sha -ProjectRoot $cwd -Branch $branch
     if ($null -eq $snapshot -and $script:GhBudgetExhausted) {
-        $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('UNVERIFIED ' + $sha7 + ' (' + $repoSlug + '); GitHub budget ' + $ghBudgetSeconds + 's exhausted (API/network), NOT green. Check: gh run list --commit ' + $sha)
+        $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('UNVERIFIED ' + $sha7 + ' (' + $repoSlug + '); API budget ' + $ghBudgetSeconds + 's exhausted, NOT green. Check: gh run list --commit ' + $sha)
         exit $emit.ExitCode
     }
     if ($null -eq $snapshot) {
@@ -599,18 +599,18 @@ if ($snapshot.Runs.Count -eq 0 -and $snapshot.FailedRuns.Count -eq 0 -and $snaps
     $script:DocsCarryoverReason = ''
     if (Get-Command -Name 'Invoke-DocsOnlyCarryover' -ErrorAction SilentlyContinue) { Invoke-DocsOnlyCarryover -ProjectRoot $cwd -Sha $sha -Branch $branch -RepoSlug $repoSlug -StatePath $statePath -EventName $eventName -RequireLatestStatus }
     if ($script:DocsCarryoverReason -ne '') {
-        Write-Block -Outcome 'pending' -Reason ('docs carryover UNVERIFIED ' + $sha7 + ' (' + $repoSlug + '): ' + $script:DocsCarryoverReason + '. Skip=no final-SHA run; wait!=proof. Check limit; no seed/duplicate CI.')
+        Write-Block -Outcome 'pending' -Reason ('docs carryover UNVERIFIED ' + $sha7 + ' (' + $repoSlug + '): ' + $script:DocsCarryoverReason + '. No final-SHA run; wait!=proof; no duplicate CI.')
     }
     # Scan-only workflows cannot supply ordinary project validation or prove CI.
     $manualState = Get-ManualWorkflowState -ProjectRoot $cwd
     if ($manualState.SecurityOnly) {
-        Write-Block -Outcome 'unproven' -Reason ('CI CHECK: security-only; no runs: ' + $sha7 + '. Verify scan/revision; NOT green/missing manual dispatch.')
+        Write-Block -Outcome 'unproven' -Reason ('CI CHECK: security-only, no runs: ' + $sha7 + '. Verify scan; NOT green/missing dispatch.')
     }
     # Ordinary validation is manual on every host. Missing dispatch is never green.
     if ($manualState.Compliant) {
         $manualExpectation=Get-CiWorkloadExpectation -ProjectRoot $cwd -RepoSlug $repoSlug -Sha $sha -Branch $branch
         if($null-eq$manualExpectation-and$script:CiWorkloadReason-ne''){Write-Block -Outcome 'unproven' -Reason (''+$script:CiWorkloadReason)}
-        Write-Block -Outcome 'pending' -Reason ('final dispatch missing: ' + $sha7 + '/' + $branch + ' (' + $repoSlug + '). Manual: push!=run; workflow_call needs workflow_dispatch root. Once: gh workflow run <workflow> --ref ' + $branch + '; verify SHA. Never GitHub/bot/Dependabot branches; no runner action.')
+        Write-Block -Outcome 'pending' -Reason ('final dispatch missing: ' + $sha7 + '/' + $branch + ' (' + $repoSlug + '). Push!=run; workflow_call needs workflow_dispatch. Run: gh workflow run <wf> --ref ' + $branch + '; verify SHA; skip bot branches.')
     }
     # Every push workflow filters on paths the push did not touch: no wait and no PR
     # would ever start a run. A note, never green; any other shape keeps the block.
@@ -622,11 +622,11 @@ if ($snapshot.Runs.Count -eq 0 -and $snapshot.FailedRuns.Count -eq 0 -and $snaps
         } catch { }
         Save-State -Outcome 'verified' -Evidence 'no-ci-for-ref'
         if ($alreadyNoted) { exit 0 }
-        exit (Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('no workflow is configured to run: ' + $sha7 + ' (' + $repoSlug + '), all push path filters exclude changes. No run expected; NOT green/built/tested.')).ExitCode
+        exit (Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('no workflow is configured to run: ' + $sha7 + ' (' + $repoSlug + '); push paths exclude changes. NOT green/built/tested.')).ExitCode
     }
     $missingExpectation=Get-CiWorkloadExpectation -ProjectRoot $cwd -RepoSlug $repoSlug -Sha $sha -Branch $branch
     if($null-eq$missingExpectation-and$script:CiWorkloadReason-ne''){Write-Block -Outcome 'unproven' -Reason ('no runs are registered yet; '+$script:CiWorkloadReason)}
-    Write-Block -Outcome 'pending' -Reason ('workflows; no runs are registered yet: ' + $sha7 + ' (' + $repoSlug + '). Incomplete; bounded wait + exact-SHA check: gh run list --commit ' + $sha)
+    Write-Block -Outcome 'pending' -Reason ('workflows; no runs are registered yet: ' + $sha7 + ' (' + $repoSlug + '). Check: gh run list --commit ' + $sha)
 }
 
 $reviewReason = [string](Get-Field $snapshot 'WorkloadReason')
@@ -649,7 +649,7 @@ if ($snapshot.PendingRuns.Count -gt 0) {
 # appears), then surface the non-blocking "CI NOT VERIFIED GREEN" notice. Never
 # claims CI passed; no commit can clear a billing block.
 if ($snapshot.BillingRuns.Count -gt 0 -and $snapshot.FailedRuns.Count -eq 0 -and $snapshot.InfraRuns.Count -eq 0) {
-    $billingReason = 'GitHub billing/payment/spend block: no job, not code failure; repair settings/rerun, not commits.'
+    $billingReason = 'GitHub billing/spend block: no job; fix settings/rerun.'
     try {
         New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
         $nowIso = [DateTime]::UtcNow.ToString('o')
@@ -665,18 +665,18 @@ if ($snapshot.FailedRuns.Count -gt 0 -or $snapshot.InfraRuns.Count -gt 0) {
         $parts += ('FAILED: ' + ($snapshot.FailedRuns -join '; ') + '. gh run view <id> --log-failed; repair/validate/push, verify SHA; preserve tests/exits.')
     }
     if ($snapshot.InfraRuns.Count -gt 0) {
-        $parts += ('Abnormal: ' + ($snapshot.InfraRuns -join '; ') + '. Classify infra/access/flake; gh run rerun <id> once, recurrence diagnose. External: -ReportExternalBlocker.')
+        $parts += ('Abnormal: ' + ($snapshot.InfraRuns -join '; ') + '. Classify infra/access/flake; gh run rerun <id> once; -ReportExternalBlocker.')
     }
     # E-09: completion gates (including a ::deep-debug finish) apply to the EXACT
     # final pushed SHA - any later commit, e.g. an accepted post-Ponytail
     # simplification, restarts this gate on its own SHA.
     if (Get-Command -Name 'Get-RunnerLeftRunningText' -ErrorAction SilentlyContinue) { $runnerText = Get-RunnerLeftRunningText -ProjectRoot $cwd; if ($runnerText -ne '') { $parts += $runnerText } }
-    $parts += 'Verify final pushed SHA + later/post-Ponytail commits too.'
+    $parts += 'Verify final pushed SHA + post-Ponytail commits.'
     Write-Block -Outcome 'failed' -Reason ('Pushed ' + $sha7 + '/' + $branch + ' (' + $repoSlug + '): ' + ($parts -join ' '))
 }
 
 if (-not $snapshot.AllSuccess) {
-    Write-Block -Outcome 'unproven' -Reason ('' + $sha7 + ' workload/attempt/jobs/steps/source UNPROVEN; verify, no seed/duplicate CI; auxiliary!=pass.')
+    Write-Block -Outcome 'unproven' -Reason ('' + $sha7 + ' workload/jobs/steps/source UNPROVEN; no seed/duplicate CI.')
 }
 # Every required workload was positively verified for this exact source.
 Save-State -Outcome 'verified' -Evidence 'ci-green'    # every run for this exact commit succeeded

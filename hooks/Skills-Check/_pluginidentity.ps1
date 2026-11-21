@@ -9,14 +9,14 @@ function Get-ClaudePluginSurface {
         $name = Get-Field $doc 'name'
         if ($name -isnot [string] -or $name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
             $answer.Known = $false; $answer.Namespace = ''
-            [void]$Partial.Add($Key + ' manifest namespace unknown')
+            [void]$Partial.Add($Key + ' namespace unknown')
         }
         else { $answer.Namespace = $name }
         if ($null -ne $doc) {
             $answer.Declared = @(Get-Field $doc 'skills')
             if ($null -ne $doc.PSObject.Properties['defaultEnabled']) {
                 if ($doc.defaultEnabled -is [bool]) { $answer.DefaultEnabled = $doc.defaultEnabled }
-                else { $answer.Known = $false; [void]$Partial.Add($Key + ' defaultEnabled malformed') }
+                else { $answer.Known = $false; [void]$Partial.Add($Key + ' defaultEnabled bad') }
             }
         }
     }
@@ -30,7 +30,7 @@ function Get-ClaudePluginSurface {
         if ($null -ne $market -and $parts.Count -eq 2 -and [string](Get-Field $market 'name') -ceq $parts[1]) {
             $entries = @(Get-Field $market 'plugins' | Where-Object { [string](Get-Field $_ 'name') -ceq $alias })
         }
-        if ($entries.Count -gt 1 -or $null -eq $market) { $answer.Known = $false; [void]$Partial.Add($Key + ' marketplace surface ambiguous') }
+        if ($entries.Count -gt 1 -or $null -eq $market) { $answer.Known = $false; [void]$Partial.Add($Key + ' marketplace ambiguous') }
         elseif ($entries.Count -eq 1) {
             $entry = $entries[0]
             if ($null -ne $entry.PSObject.Properties['skills']) {
@@ -41,14 +41,14 @@ function Get-ClaudePluginSurface {
             }
             if ($null -ne $entry.PSObject.Properties['defaultEnabled']) {
                 if ($entry.defaultEnabled -is [bool]) { $answer.DefaultEnabled = $entry.defaultEnabled }
-                else { $answer.Known = $false; [void]$Partial.Add($Key + ' marketplace defaultEnabled malformed') }
+                else { $answer.Known = $false; [void]$Partial.Add($Key + ' marketplace defaultEnabled bad') }
             }
         }
     }
-    if ($answer.Declared.Count -gt 128) { $answer.Known = $false; $answer.Declared = @($answer.Declared | Select-Object -First 128); [void]$Partial.Add($Key + ' declaration ceiling reached') }
+    if ($answer.Declared.Count -gt 128) { $answer.Known = $false; $answer.Declared = @($answer.Declared | Select-Object -First 128); [void]$Partial.Add($Key + ' declaration cap') }
     foreach ($entry in $answer.Declared) {
         if ($null -ne $entry -and ($entry -isnot [string] -or [string]::IsNullOrWhiteSpace($entry))) {
-            $answer.Known = $false; [void]$Partial.Add($Key + ' skill declaration malformed')
+            $answer.Known = $false; [void]$Partial.Add($Key + ' declaration bad')
         }
     }
     return $answer
@@ -60,7 +60,7 @@ function Add-ClaudePluginSkill {
     if (-not $Known) { $Skill.Invocation = ''; $Skill.Status = 'unknown' }
     $hash = Get-DiscoverySkillHash $Skill.Path
     Set-ObjectProperty $Skill 'DefinitionHash' $hash
-    if ($hash -eq '') { $Skill.Status = 'unknown'; $Skill.Invocation = ''; [void]$Result.Partial.Add($Key + ' skill unreadable or over byte ceiling') }
+    if ($hash -eq '') { $Skill.Status = 'unknown'; $Skill.Invocation = ''; [void]$Result.Partial.Add($Key + ' skill unreadable') }
     # Identical alias copies are one capability. Different providers/namespaces
     # stay distinct; conflicting definitions of one invocation cannot be offered.
     if ($Skill.Invocation -eq '' -or $hash -eq '') { Add-DiscoveredSkill $Result $Skill; return }

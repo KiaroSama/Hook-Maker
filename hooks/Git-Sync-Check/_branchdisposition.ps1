@@ -78,10 +78,10 @@ function Get-BranchDispositionInstruction {
     $lines = New-Object System.Collections.Generic.List[string]
     [void]$lines.Add('Branches: ONLY proven carried/worthless -> merge/delete or close/delete; else survivor+reason. Preserve unique/protected/unknown/others'' work; unverifiable -> report, NEVER delete.')
     if ($Disposition.Base -ne '') {
-        if (@($Disposition.Merged).Count -gt 0) { [void]$lines.Add('- merged into ' + $Disposition.Base + ' (safe to delete once confirmed): ' + (@($Disposition.Merged) -join ', ')) }
-        if (@($Disposition.Unique).Count -gt 0) { [void]$lines.Add('- commits absent from ' + $Disposition.Base + ' (merge/carried elsewhere/survivor reason):' + (@($Disposition.Unique) -join ', ')) }
-        if (@($Disposition.Merged).Count -eq 0 -and @($Disposition.Unique).Count -eq 0) { [void]$lines.Add('- no branch besides ' + $Disposition.Base + ' was found.') }
-        if ($Disposition.Capped) { [void]$lines.Add('- the listing was capped at ' + $script:DispositionMaxBranches + ' per kind; more branches exist.') }
+        if (@($Disposition.Merged).Count -gt 0) { [void]$lines.Add('- merged into ' + $Disposition.Base + ' (confirm before delete): ' + (@($Disposition.Merged) -join ', ')) }
+        if (@($Disposition.Unique).Count -gt 0) { [void]$lines.Add('- commits absent from ' + $Disposition.Base + ' (merge/survivor reason):' + (@($Disposition.Unique) -join ', ')) }
+        if (@($Disposition.Merged).Count -eq 0 -and @($Disposition.Unique).Count -eq 0) { [void]$lines.Add('- no branch besides ' + $Disposition.Base + '.') }
+        if ($Disposition.Capped) { [void]$lines.Add('- capped at ' + $script:DispositionMaxBranches + '/kind; more exist.') }
     }
     foreach ($p in @($Disposition.Partial)) { [void]$lines.Add('- partial coverage: ' + $p + '.') }
     return ($lines.ToArray() -join "`n")

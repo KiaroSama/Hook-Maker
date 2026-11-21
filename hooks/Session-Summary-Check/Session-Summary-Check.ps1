@@ -169,9 +169,9 @@ $blocked = @(Get-BlockedGateNames -ProjectKey $projectKey -SessionId $sessionId)
 $lines = New-Object System.Collections.ArrayList
 if (-not [string]::IsNullOrEmpty($languageLine)) { [void]$lines.Add($languageLine); [void]$lines.Add('') }
 # One advisory replaces repeated policy paragraphs without dropping closure facts.
-[void]$lines.Add('Session-Summary-Check: advisory, one short DONE / REMAINING at task end (after MCP/Skills/Rules lines), user language; never mid-work/wait/correction.')
+[void]$lines.Add('Session-Summary-Check: advisory, one short DONE / REMAINING at task end (after MCP/Skills/Rules lines), user lang; never mid-work.')
 [void]$lines.Add('Published: fix changed claims once, no second wrap-up. Verify memory/Git/exact-SHA CI/docs/tests/cleanup/secrets or state gap.')
-[void]$lines.Add('DONE: verified work/checks/gates; REMAINING: open required items/blockers/untested paths with reasons. History != open gate; no invented follow-ups.')
+[void]$lines.Add('DONE: verified work/checks/gates; REMAINING: open required items/blockers/untested paths with reasons. History != open gate.')
 
 # A summary that went out while a gate was still open. Stated ONCE, as a fact
 # about what already happened, and never turned into a demand for a correction
@@ -183,14 +183,14 @@ if ($null -ne (Get-Command Read-GenerationFailureOnce -ErrorAction SilentlyConti
     try { $pastFailure = Read-GenerationFailureOnce -HookInput $hookInput } catch { $pastFailure = '' }
     if (-not [string]::IsNullOrWhiteSpace($pastFailure)) {
         [void]$lines.Add('')
-        [void]$lines.Add('NOTED ONCE, NO ACTION: wrap-up readiness UNVERIFIED (' + $pastFailure + ').')
-        [void]$lines.Add('Already displayed; history, no correction.')
+        [void]$lines.Add('NOTED ONCE: wrap-up UNVERIFIED (' + $pastFailure + ').')
+        [void]$lines.Add('Already displayed; no action.')
     }
 }
 
 if ($blocked.Count -gt 0) {
     [void]$lines.Add('')
-    [void]$lines.Add('Gate(s) that already blocked earlier in this session: ' + ($blocked -join ', ') + '.')
+    [void]$lines.Add('Blocked earlier in this session: ' + ($blocked -join ', ') + '.')
     [void]$lines.Add('Historical markers != current open gates.')
     [void]$lines.Add('Recheck each: resolved -> DONE; unresolved -> REMAINING.')
 }

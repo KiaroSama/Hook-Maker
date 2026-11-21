@@ -44,7 +44,7 @@ function Resolve-FailedRunVerdict {
     # suite the sibling guard had just told the reader not to run here.
     if (-not $AllowCiRecovery) {
         return [pscustomobject]@{ Blocking = $true; Lines = @(
-            'failed historical runId=' + [string](Get-Field $Doc 'runId') + '; commandFingerprint=' + [string](Get-Field $Doc 'commandFingerprint') + '; endedUtc=' + [string](Get-Field $Doc 'endedUtc') + '; failedField=' + $NoCiRecoveryReason + '. Exit code=' + $exitCode + '.',
+            'failed runId=' + [string](Get-Field $Doc 'runId') + '; cmd=' + [string](Get-Field $Doc 'commandFingerprint') + '; ended=' + [string](Get-Field $Doc 'endedUtc') + '; failedField=' + $NoCiRecoveryReason + '; exit=' + $exitCode + '.',
             'Retain receipt; SAME COMPLETE argv/scope, unrelated CI!=repair.') }
     }
     $ci = Test-CiClearedFailure -ProjectRoot $ProjectRoot -FailureEndedUtc (ConvertTo-UtcStamp (Get-Field $Doc 'endedUtc'))
@@ -54,26 +54,18 @@ function Resolve-FailedRunVerdict {
         return [pscustomobject]@{
             Blocking = $false
             Lines    = @('guarded failure exit=' + $exitCode +
-                '), but every CI check for commit ' + $short + ' (clean HEAD), passed after failure. ' +
-                '. No heavy duplicate; local only for evidence CI cannot provide.')
+                ', CI green for ' + $short + ' (clean HEAD). ' +
+                'No duplicate CI; local only if CI down.')
         }
     }
 
     return [pscustomobject]@{
         Blocking = $true
         Lines    = @(
-            'latest guarded run FAILED, exit=' + $exitCode + '; incomplete.',
-            $(if ($LastProgress -ne '') { 'Last recorded progress: ' + $LastProgress } else { 'No final progress recorded.' }),
-            'Repair SAME-command scripts\Run-Tests-Guarded.ps1 overall=ok or newer clean-HEAD exact-SHA CI; no weaker assertions/exits, unresolved!=pass.',
-            # Pushing the repair and letting CI go green on that exact commit clears
-            # this too, on a clean tree - which is the cheaper route when CI already
-            # runs the suite. Stated because the alternative was an eleven-minute
-            # duplicate local run that the sibling guard had already refused.
-            'CI eligibility: ' + $ci.Reason + '.',
-            # The supersede matches the COMMAND, not the tree state, so the edit that
-            # fixed the failure does not disqualify the green run proving it. The escape
-            # hatch is for when a re-run cannot reproduce the identity at all.
-            'SAME WHOLE argv green survives edits, three suites!=one. Identity: pwsh -NoProfile -File "' + $HookPath + '" -ResolveIncident ' + $key + ' -RecoveryRunId "<verified recovery run id>" -ProjectRoot "' + $ProjectRoot + '" -Reason "<substantive equivalent test scope and verified repair, at least 80 UTF-8 bytes>".',
-            'Supersession: exact WHOLE argv; three suites!=one.')
+            'latest guarded run FAILED, exit=' + $exitCode + '.',
+            $(if ($LastProgress -ne '') { 'Progress: ' + $LastProgress } else { 'No progress.' }),
+            'Repair SAME scripts\Run-Tests-Guarded.ps1 overall=ok or clean-HEAD CI; no weaker assertions/exits, unresolved!=pass.',
+            'CI: ' + $ci.Reason + '.',
+            'SAME WHOLE argv green survives edits, three suites!=one. pwsh -NoProfile -File "' + $HookPath + '" -ResolveIncident ' + $key + ' -RecoveryRunId "<id>" -ProjectRoot "' + $ProjectRoot + '" -Reason "<>=80B verified repair>".')
     }
 }

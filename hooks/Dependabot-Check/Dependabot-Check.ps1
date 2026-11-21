@@ -131,7 +131,7 @@ if ($limitReason -eq '') {
 }
 
 if ($limitReason -ne '') {
-    Write-ContextIfNew -Fingerprint ('limited:' + $limitReason) -Message ('DEPENDABOT CHECK (' + $repoSlug + '): pending Dependabot work could NOT be verified because ' + $limitReason + '. Updates UNVERIFIED; report relevant limit.')
+    Write-ContextIfNew -Fingerprint ('limited:' + $limitReason) -Message ('DEPENDABOT CHECK (' + $repoSlug + '): pending Dependabot work UNVERIFIED because ' + $limitReason + '. Report the limit.')
 }
 
 if ($prs.Count -eq 0) {
@@ -238,8 +238,8 @@ $priorityNote = if ($hasSecurity) {
 else {
     'None of these are marked SECURITY.'
 }
-$message = 'DEPENDABOT CHECK (' + $repoSlug + '): ' + $prs.Count + ' pending Dependabot PR(s) from the verified app/dependabot author:' + "`n" +
+$message = 'DEPENDABOT CHECK (' + $repoSlug + '): ' + $prs.Count + ' pending Dependabot PR(s) (verified app/dependabot):' + "`n" +
     (($prLines -join "`n") + $moreNote) + "`n" +
-    $priorityNote + ' BEFORE action global-github-automation-rules.md Dependabot FULL. Unrelated incl.SECURITY: defer; interrupt only requested/directly relevant/reliably confirmed unsafe. No label-only action/auto MAJOR/PRERELEASE.'
+    $priorityNote + ' BEFORE action global-github-automation-rules.md Dependabot FULL. Unrelated incl.SECURITY: defer; interrupt only if requested/relevant/confirmed unsafe. No label-only action/auto MAJOR/PRERELEASE.'
 
 Write-ContextIfNew -Fingerprint (($fingerprintParts | Sort-Object) -join '|') -Message $message

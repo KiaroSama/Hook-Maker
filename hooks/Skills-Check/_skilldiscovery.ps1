@@ -147,8 +147,8 @@ function Read-DiscoveryJson {
     param([string]$Path, $Partial, [string]$Label)
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
     try {
-        if ((Get-Item -LiteralPath $Path).Length -gt $script:DiscoveryMaxJsonBytes) { [void]$Partial.Add($Label + ' too large to read'); return $null }
-        if ((Get-Item -LiteralPath $Path).Attributes -band [IO.FileAttributes]::ReparsePoint) { [void]$Partial.Add($Label + ' reparse document skipped'); return $null }
+        if ((Get-Item -LiteralPath $Path).Length -gt $script:DiscoveryMaxJsonBytes) { [void]$Partial.Add($Label + ' oversized'); return $null }
+        if ((Get-Item -LiteralPath $Path).Attributes -band [IO.FileAttributes]::ReparsePoint) { [void]$Partial.Add($Label + ' reparse skipped'); return $null }
         $text = [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false, $true))
         return ($text | ConvertFrom-Json -ErrorAction Stop)
     }
@@ -189,9 +189,9 @@ function Get-PluginSkillFolders {
         if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
             $relFromRoot = $dir.Substring([Math]::Min($Root.Length, $dir.Length)).TrimStart('\', '/')
             if ($relFromRoot -ne '' -and (Test-Path -LiteralPath (Join-Path (Join-Path $Root '.disabled-by-policy') $relFromRoot) -PathType Container)) { continue }
-            [void]$Partial.Add($Label + ' skill directory missing'); continue
+            [void]$Partial.Add($Label + ' dir missing'); continue
         }
-        if (-not (Test-DiscoveryContainedPath -Path $dir -Root $Root)) { [void]$Partial.Add($Label + ' reparse skill directory skipped'); continue }
+        if (-not (Test-DiscoveryContainedPath -Path $dir -Root $Root)) { [void]$Partial.Add($Label + ' reparse dir skipped'); continue }
         if (Test-Path -LiteralPath (Join-Path $dir 'SKILL.md') -PathType Leaf) { Add-UniqueFolder $found ((Get-Item -LiteralPath $dir).FullName); continue }
         foreach ($name in $RelevantNames) {
             if ($name -eq '.disabled-by-policy') { continue }
@@ -199,7 +199,7 @@ function Get-PluginSkillFolders {
             if ((Test-Path -LiteralPath (Join-Path $candidate 'SKILL.md') -PathType Leaf) -and (Test-DiscoveryContainedPath $candidate $Root)) { Add-UniqueFolder $found $candidate }
         }
         $children = @(Get-ChildItem -LiteralPath $dir -Directory -ErrorAction SilentlyContinue | Select-Object -First 1201)
-        if ($children.Count -gt 1200) { [void]$Partial.Add($Label + ' directory ceiling reached') }
+        if ($children.Count -gt 1200) { [void]$Partial.Add($Label + ' dir cap') }
         foreach ($child in @($children | Select-Object -First 1200)) {
             if ($child.Name -eq '.disabled-by-policy') { continue }
             if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
@@ -304,7 +304,7 @@ function Get-ClaudeDiscovery {
         $pending = New-Object 'System.Collections.Generic.List[object]'
         $clock = [Diagnostics.Stopwatch]::StartNew()
         foreach ($prop in $records.plugins.PSObject.Properties) {
-            if ($pending.Count -ge 256 -or $clock.Elapsed.TotalSeconds -gt 2) { $Result.InstallKnown = $false; [void]$Result.Partial.Add('plugin record/time ceiling reached'); break }
+            if ($pending.Count -ge 256 -or $clock.Elapsed.TotalSeconds -gt 2) { $Result.InstallKnown = $false; [void]$Result.Partial.Add('plugin record/time cap'); break }
             [void]$Result.InstallKeys.Add($prop.Name)
             $best = $null; $bestTicks = -1L
             foreach ($rec in @($prop.Value)) {
@@ -328,7 +328,7 @@ function Get-ClaudeDiscovery {
                 foreach ($folder in $item.Folders) {
                     $selected = $Discovery.RelevantNames -contains (Split-Path -Leaf $folder)
                     if ($selected -ne $selectedPass) { continue }
-                    if ($Result.Skills.Count -ge $script:DiscoveryMaxSkills -or $clock.Elapsed.TotalSeconds -gt 4) { [void]$Result.Partial.Add($item.Key + ' uncovered installed scope: skill/time ceiling reached'); break }
+                    if ($Result.Skills.Count -ge $script:DiscoveryMaxSkills -or $clock.Elapsed.TotalSeconds -gt 4) { [void]$Result.Partial.Add($item.Key + ' scope cap reached'); break }
                     $skill = New-DiscoveredSkill -Plugin $item.Surface.Namespace -Folder $folder -Source 'claude-plugin' -Version $item.Version -Enabled $item.Enabled -Client 'claude'
                     Add-ClaudePluginSkill -Result $Result -Skill $skill -Key $item.Key -Known $item.Surface.Known
                 }

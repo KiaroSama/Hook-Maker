@@ -315,7 +315,7 @@ try {
     try {
         $missStdin = @{ session_id = 'm-1'; cwd = $pMiss; hook_event_name = 'UserPromptSubmit'; prompt = 'refactor the architecture and check module dependencies across the codebase' } | ConvertTo-Json
         $r = Fire -Cwd $pMiss -HookPath $GraphHook -RawStdin $missStdin
-        Check 'missing graph + relevant -> create-then-query guidance' ($r.Out -like '*GRAPH: structural task*' -and $r.Out -like '*graphify --help*' -and $r.Out -like '*BEFORE build/navigation: graphify.md/graphify-markdown.md FULL*') $r.Out
+        Check 'missing graph + relevant -> create-then-query guidance' ($r.Out -like '*GRAPH: structural task*' -and $r.Out -like '*graphify --help*' -and $r.Out -like '*BEFORE build: graphify.md/graphify-markdown.md FULL*') $r.Out
         Check 'hook did NOT execute graphify (no sentinel)' (-not (Test-Path -LiteralPath $sentinel))
         # Missing graph + trivial/docs prompt -> total silence (new session).
         $trivialStdin = @{ session_id = 'm-triv'; cwd = $pMiss; hook_event_name = 'UserPromptSubmit'; prompt = 'fix a typo in the changelog wording' } | ConvertTo-Json
@@ -332,7 +332,7 @@ try {
     try {
         $u1 = @{ session_id = 'u-1'; cwd = $pMiss2; hook_event_name = 'UserPromptSubmit'; prompt = 'trace the call path and impact of this entry point' } | ConvertTo-Json
         $r = Fire -Cwd $pMiss2 -HookPath $GraphHook -RawStdin $u1
-        Check 'missing graph + graphify unavailable -> bounded fallback advisory' ($r.Out -like '*GRAPH: structural task*' -and $r.Out -like '*bounded scoped source search/reads*' -and $r.Out -like '*CLI absent from PATH*') $r.Out
+        Check 'missing graph + graphify unavailable -> bounded fallback advisory' ($r.Out -like '*GRAPH: structural task*' -and $r.Out -like '*bounded scoped source search/reads*' -and $r.Out -like '*(no CLI)*') $r.Out
         # Same session + same (no-graph) state -> deduped, never loops.
         $r2 = Fire -Cwd $pMiss2 -HookPath $GraphHook -RawStdin $u1
         Check 'unavailable fallback does not repeat in the same session/state' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out

@@ -57,10 +57,10 @@ function New-BlindWaitFinding {
     return [pscustomobject]@{ Reason = $Reason; SafePattern = $SafePattern }
 }
 
-$script:BlindWaitSafeSleep = 'Wait for signal or bounded readiness: ' +
+$script:BlindWaitSafeSleep = 'Bounded poll:' +
 "`n`n" + '  $deadline = [DateTime]::UtcNow.AddSeconds(<budget>)' + "`n" +
 '  while ([DateTime]::UtcNow -lt $deadline) { if (<ready>) { break }; Start-Sleep -Milliseconds 200 }' + "`n`n" +
-'Bounded 200ms backoff OK; blind seconds NOT.'
+'200ms backoff OK; blind seconds NOT.'
 
 function Get-BlindWaitFinding {
     param([string[]]$Tokens, [int]$MaxBlindSleepSeconds)
@@ -79,14 +79,14 @@ function Get-BlindWaitFinding {
                 if (-not $t[$j].StartsWith('-')) { break }
             }
             if ($secs -ge $MaxBlindSleepSeconds) {
-                return New-BlindWaitFinding -Reason ('blind wait: Start-Sleep ' + $secs + 's >= ceiling ' + $MaxBlindSleepSeconds + 's') -SafePattern $script:BlindWaitSafeSleep
+                return New-BlindWaitFinding -Reason ('blind wait: Start-Sleep ' + $secs + 's >=' + $MaxBlindSleepSeconds + 's') -SafePattern $script:BlindWaitSafeSleep
             }
         }
         # 2) shell/coreutils sleep (sleep 300, sleep 5m).
         elseif ($prog -eq 'sleep' -and $i + 1 -lt $t.Count) {
             $secs = ConvertTo-LiteralSeconds $t[$i + 1] 1
             if ($secs -ge $MaxBlindSleepSeconds) {
-                return New-BlindWaitFinding -Reason ('blind wait: sleep ' + $secs + 's >= ceiling ' + $MaxBlindSleepSeconds + 's') -SafePattern $script:BlindWaitSafeSleep
+                return New-BlindWaitFinding -Reason ('blind wait: sleep ' + $secs + 's >=' + $MaxBlindSleepSeconds + 's') -SafePattern $script:BlindWaitSafeSleep
             }
         }
         # 3) Windows  timeout /t N  as a blind delay (GNU  timeout N <cmd>  bounds a
@@ -96,7 +96,7 @@ function Get-BlindWaitFinding {
                 if ($t[$j].ToLowerInvariant() -eq '/t' -and $j + 1 -lt $t.Count) {
                     $secs = ConvertTo-LiteralSeconds $t[$j + 1] 1
                     if ($secs -ge $MaxBlindSleepSeconds) {
-                        return New-BlindWaitFinding -Reason ('blind delay: timeout /t ' + $secs + ' >= ceiling ' + $MaxBlindSleepSeconds + 's') -SafePattern $script:BlindWaitSafeSleep
+                        return New-BlindWaitFinding -Reason ('blind delay: timeout /t ' + $secs + ' >=' + $MaxBlindSleepSeconds + 's') -SafePattern $script:BlindWaitSafeSleep
                     }
                     break
                 }
@@ -121,7 +121,7 @@ function Get-BlindWaitFinding {
         $hasBound = $false
         foreach ($b in $boundSignals) { if ($lowerAll.Contains($b)) { $hasBound = $true; break } }
         if ($hasSleep -and -not $hasBound) {
-            return New-BlindWaitFinding -Reason 'unbounded always-true sleep/poll loop: no visible deadline' -SafePattern $script:BlindWaitSafeSleep
+            return New-BlindWaitFinding -Reason 'blind wait: unbounded sleep/poll loop' -SafePattern $script:BlindWaitSafeSleep
         }
     }
     # 5) PYTHON literal long sleep (`python -c "time.sleep(300)"`). The tokenizer
@@ -141,7 +141,7 @@ function Get-BlindWaitFinding {
             foreach ($m in [regex]::Matches($seg[$i], 'time\.sleep\(\s*([0-9]+(?:\.[0-9]+)?)\s*\)')) {
                 $secs = [int][Math]::Floor([double]$m.Groups[1].Value)
                 if ($secs -ge $MaxBlindSleepSeconds) {
-                    return New-BlindWaitFinding -Reason ('blind wait: python time.sleep(' + $secs + ') >= ceiling ' + $MaxBlindSleepSeconds + 's') -SafePattern $script:BlindWaitSafeSleep
+                    return New-BlindWaitFinding -Reason ('blind wait: python time.sleep(' + $secs + ') >=' + $MaxBlindSleepSeconds + 's') -SafePattern $script:BlindWaitSafeSleep
                 }
             }
         }

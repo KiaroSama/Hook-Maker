@@ -187,11 +187,11 @@ function Get-CandidateTypeLabel {
 function Get-MatchReason {
     param([string]$Kind)
     switch ($Kind) {
-        'cache-dir' { return 'test cache/temp name' }
-        'task-created-dir' { return 'task-created bytecode cache name' }
-        'review-dir' { return 'diagnostic/review directory name' }
-        'task-created-file' { return 'compiled-bytecode pattern' }
-        'review-file' { return 'coverage/report pattern' }
+        'cache-dir' { return 'test cache/temp' }
+        'task-created-dir' { return 'task-created bytecode' }
+        'review-dir' { return 'diagnostic/review dir' }
+        'task-created-file' { return 'compiled bytecode' }
+        'review-file' { return 'coverage/report' }
         default { return 'unrecognized' }
     }
 }
@@ -199,12 +199,12 @@ function Get-MatchReason {
 function Get-ReviewReason {
     param([string]$Classification)
     switch ($Classification) {
-        'likely-disposable' { return 'independently verify disposal, then delete yourself' }
-        'review-or-diagnostic' { return 'diagnostic/review: retain until verified unneeded' }
-        'protected' { return 'tracked/staged/link: never delete' }
-        'ambiguous' { return 'origin/purpose unknown: retain/report' }
-        'unknown-git-state' { return 'git state unknown: retain/report' }
-        'partial-or-unreadable' { return 'metadata unreadable: retain/report' }
+        'likely-disposable' { return 'verify, then delete' }
+        'review-or-diagnostic' { return 'retain unless unneeded' }
+        'protected' { return 'tracked/staged/link: keep' }
+        'ambiguous' { return 'unknown: keep/report' }
+        'unknown-git-state' { return 'git unknown: keep/report' }
+        'partial-or-unreadable' { return 'unreadable: keep/report' }
         default { return 'retain/report' }
     }
 }
@@ -604,11 +604,10 @@ switch ($category) {
     'partial' {
         $blocking = $true
         [void]$lines.Add('Scan PARTIAL (read-only): (' + ($coverageCauses -join ', ') + '); NOT clean.')
-        [void]$lines.Add('Review unreadable/.env MAX_SCAN_ENTRIES/MAX_SCAN_DEPTH; recheck/disclose PARTIAL.')
+        [void]$lines.Add('Check unreadable/.env MAX_SCAN_ENTRIES/MAX_SCAN_DEPTH; disclose PARTIAL.')
     }
     'unknown' {
-        [void]$lines.Add('Classification UNKNOWN (read-only): (' + ($evidenceCauses -join ', ') + ').')
-        [void]$lines.Add('Ambiguous disposal; preserve all.')
+        [void]$lines.Add('Classification UNKNOWN (read-only): (' + ($evidenceCauses -join ', ') + '). Ambiguous; preserve all.')
     }
     default {
         [void]$lines.Add('Read-only candidates: ' + $reviewNeeded.Count + ' project candidates: review required.')
@@ -616,7 +615,7 @@ switch ($category) {
 }
 
 if ($foundList.Count -gt 0) {
-    [void]$lines.Add('Paths/metadata only, no content:')
+    [void]$lines.Add('Metadata only, no content:')
     foreach ($finding in @($sortedFound | Select-Object -First $maxFindings)) {
         [void]$lines.Add('  ' + $finding.RelPath +
             ' | class=' + $finding.Classification +
@@ -630,7 +629,7 @@ if ($foundList.Count -gt 0) {
             ' | needs-review=' + $finding.ReviewReason)
     }
     if ($foundList.Count -gt $maxFindings) {
-        [void]$lines.Add('  ... and ' + ($foundList.Count - $maxFindings) + ' more (MAX_FINDINGS limits list, not scan).')
+        [void]$lines.Add('  ... +' + ($foundList.Count - $maxFindings) + ' more (MAX_FINDINGS cap).')
     }
 }
 [void]$lines.Add('Scan coverage: ' + $(if ($allCauses.Count -eq 0) { 'complete' } else { 'PARTIAL - ' + ($allCauses -join ', ') }))

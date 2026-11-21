@@ -12,17 +12,16 @@ function Invoke-ManualWorkflowRegression {
     $r=Fire -HookPath $BaselineHook -Cwd $repo
     Check 'manual hosted validation satisfies CI baseline without automatic advice' ($r.Exit-eq0-and$r.Out-notmatch'none provides blocking project validation|Add CI on push/pull_request') $r.Out
     Check 'security posture binds ownership visibility support and full current owner' (
-        $r.Out-match'global-github-automation-rules.md Sec12 FULL first: owner/visibility/support/plan'-and
+        $r.Out-match'global-github-automation-rules.md Sec12 FULL first: owner/visibility/plan'-and
         $r.Out-match'Public CodeQL/Socket/Semgrep/CodeRabbit'-and
-        $r.Out-match'private Socket/Semgrep; preserve existing'-and
+        $r.Out-match'private Socket/Semgrep; keep existing'-and
         $r.Out-match'Graph/alerts/malware/update PRs distinct'-and
-        $r.Out-match'Free-first/shared quotas/financial consent/privacy'-and
+        $r.Out-match'Free-first, financial consent, privacy'-and
         $r.Out-notmatch'CodeQL optional|Optional CodeQL absent') $r.Out
     Check 'security reminder routes real reviews privacy and nonexecuting scope' (
-        $r.Out-match'All-bot disposition'-and$r.Out-match'CodeRabbit uncovered head only; no duplicates/auto-merge'-and
-        $r.Out-match'Latest execution!=rate-limit/stale/skip'-and
-        $r.Out-match'Verified private action links'-and
-        $r.Out-match'Info-only: no actions; hook executes nothing') $r.Out
+        $r.Out-match'Dispose all bots'-and$r.Out-match'CodeRabbit uncovered head only; no duplicates/auto-merge'-and
+        $r.Out-match'Latest run!=rate-limit/stale/skip'-and
+        $r.Out-match'Info-only: no actions') $r.Out
     if($Focused){return}
     . (Join-Path $HooksRoot '_hooklib.ps1');. (Join-Path $HooksRoot '_scope.ps1')
     . (Join-Path $HooksRoot 'Github-Baseline-Check/_readmebadges.ps1')
@@ -30,7 +29,7 @@ function Invoke-ManualWorkflowRegression {
     $badgeNote = Get-ReadmeBadgeNote $state
     Check 'README and packaged-logo contracts require distinct full owners before work' (
         $badgeNote -match 'BEFORE README: global-repository-rules.md README FULL' -and
-        $badgeNote -match 'BEFORE app logo/signing: global-project-lifecycle-rules.md FULL; README!=app logo' -and
+        $badgeNote -match 'App logo/signing: global-project-lifecycle-rules.md FULL' -and
         $badgeNote -match '12 to 16 verified badges/Donate')
     $sourceState = Get-ManualWorkflowState (Split-Path -Parent $HooksRoot)
     Check 'own workflow retains validation and reports only the standing security trigger exception' (

@@ -156,12 +156,12 @@ function Get-IncidentReasonFromDoc {
     $td = [string](Get-Field $Doc 'terminateDetail')
     $lk = @(@(Get-Field $Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
     if ($ov -eq 'terminated' -or (Get-Field $Doc 'terminated') -eq $true) {
-        return 'the guarded run was TERMINATED (' +
-            $(if ($tr -ne '') { $tr } else { 'unknown reason' }) + ')' +
+        return 'guarded run TERMINATED (' +
+            $(if ($tr -ne '') { $tr } else { 'unknown' }) + ')' +
             $(if ($td -ne '') { ': ' + $td } else { '' })
     }
     if ($lk.Count -gt 0) {
-        return 'the guarded run LEAKED process(es) ' + (@($lk) -join ', ') + ' that survived termination'
+        return 'guarded run LEAKED process(es) ' + (@($lk) -join ', ')
     }
     return ''
 }
@@ -301,7 +301,7 @@ function Get-ActiveMarkerState {
     $detail = ''
     $isLive = $false
     if ($candidate -le 0) {
-        $detail = 'the marker records no usable owner process id'
+        $detail = 'no usable owner PID'
     }
     else {
         # PID + start time is the MINIMUM identity. No parseable start time means
@@ -310,8 +310,7 @@ function Get-ActiveMarkerState {
         # and markers whose owner lookup failed at write time included.
         $markerStartUtc = ConvertTo-UtcTime (Get-Field $Doc 'ownerProcessStartUtc')
         if ($null -eq $markerStartUtc) {
-            $detail = 'Owner start missing/invalid; PID ' + $candidate +
-                ' may be reused, not proven owner.'
+            $detail = 'Owner start missing/invalid; PID ' + $candidate + ' unverified.'
         }
         else {
             $liveProcess = $null
@@ -323,18 +322,18 @@ function Get-ActiveMarkerState {
                 $liveStart = $null
                 try { $liveStart = $liveProcess.StartTime.ToUniversalTime() } catch { $liveStart = $null }
                 if ($null -eq $liveStart) {
-                    $detail = 'process ' + $candidate + ' alive, start unreadable; owner UNPROVEN.'
+                    $detail = 'PID ' + $candidate + ' alive, start unreadable.'
                 }
                 elseif ([Math]::Abs(($liveStart - $markerStartUtc).TotalSeconds) -gt 2) {
-                    $detail = 'process ' + $candidate + ' is alive but started at ' + $liveStart.ToString('o') +
-                        '; recorded ' + $markerStartUtc.ToString('o') + '; unrelated reused PID.'
+                    $detail = 'PID ' + $candidate + ' started ' + $liveStart.ToString('o') +
+                        ' != ' + $markerStartUtc.ToString('o') + '; reused PID.'
                 }
                 else {
                     $markerExe = [string](Get-Field $Doc 'ownerExecutablePath')
                     $liveExe = ''
                     try { $liveExe = [string]$liveProcess.Path } catch { $liveExe = '' }
                     if ($markerExe -ne '' -and $liveExe -ne '' -and -not [string]::Equals($liveExe, $markerExe, [System.StringComparison]::OrdinalIgnoreCase)) {
-                        $detail = 'process ' + $candidate + ' executable=' + $liveExe + '; recorded owner differs.'
+                        $detail = 'PID ' + $candidate + ' exe=' + $liveExe + '; owner differs.'
                     }
                     else { $isLive = $true }
                 }
@@ -370,7 +369,7 @@ function Get-ActiveMarkerState {
     if ($null -ne $created -and $created -lt [DateTime]::UtcNow.AddHours(-[Math]::Abs($MaxAgeHours))) {
         $age = [int][Math]::Floor(([DateTime]::UtcNow - $created).TotalHours)
         return [pscustomobject]@{ State = 'expired'; OwnerPid = 0; RunId = $runId
-            Detail = $detail + ', and the marker is ' + $age + 'h old (past the ' + [Math]::Abs($MaxAgeHours) + 'h abandoned-record horizon), so it belongs to an earlier session'
+            Detail = $detail + ', ' + $age + 'h old (past ' + [Math]::Abs($MaxAgeHours) + 'h abandoned-record horizon)'
         }
     }
     return [pscustomobject]@{ State = 'died'; OwnerPid = $candidate; RunId = $runId; Detail = $detail }

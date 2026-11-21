@@ -100,7 +100,7 @@ if ($eventName -eq 'Stop' -and $script:EvidenceLibReady -and (Get-Command Get-St
             if (-not (Test-NewGateFingerprint -Name 'GraphUpdateCheck' -Cwd $cwd -Fingerprint $finding.Fingerprint)) { exit 0 }
             $blockMessage = @(
                 ('GRAPH UPDATE CHECK: request "' + $finding.FirstPrompt + '" edited ' + [string]$finding.EditCount + ' project files; no graphify update after the last edit.'),
-                ('Run `graphify update .` now (local AST, no model), or end the reply with `Graph: not refreshed - <reason>`.' + $lifecycleNote)
+                ('Run `graphify update .` (local AST), or `Graph: not refreshed - <reason>`.' + $lifecycleNote)
             ) -join "`n"
             $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Graph-Update-Check' -FindingFingerprint $finding.Fingerprint -EventName $eventName -Message $blockMessage -Condition 'required-workflow'
             exit $emit.ExitCode
@@ -141,7 +141,7 @@ $markdownNote = ''
 if ($markdownStale -and (-not $codeStale -or $markdown.TimeUtc -gt $workTime)) {
     $markdownNote = 'Covered Markdown changed beyond Git: graphify update . (local); .ai/: host-agent semantic only, no external model. '
 }
-$reason = 'GRAPH UPDATE CHECK: graphify-out/graph.json predates changes. ' + $markdownNote + 'Graphed/structural impact: graphify update . (local AST); else explain. Advisory/cooldown.'
+$reason = 'GRAPH UPDATE CHECK: graph.json stale. ' + $markdownNote + 'Graphed/structural impact: graphify update . (local AST); else explain.'
 $reason += $lifecycleNote
 # Record the block so THIS hook's own re-entry is recognised; another
 # gate's block must not mute it, and its own must not repeat.

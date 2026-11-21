@@ -93,16 +93,16 @@ function Get-CommitIdentityReminder {
     $lines = New-Object System.Collections.Generic.List[string]
     [void]$lines.Add('COMMIT IDENTITY: ' + $what + ': owner fields ONLY ' + $script:PublicCommitEmail + '. BEFORE create/repair: global-repository-rules.md Git and identity FULL.')
     if (-not $Report.LogOk) {
-        [void]$lines.Add('- Log unreadable; other-address count UNKNOWN.')
+        [void]$lines.Add('- Log unreadable; count UNKNOWN.')
     }
     else {
-        $scope = if ($Report.Truncated) { 'in the newest ' + $Report.Scanned + ' commits (scan capped - older ones were not read)' } else { 'across ' + $Report.Scanned + ' commit(s)' }
-        [void]$lines.Add('- ' + $Report.OtherCommits + ' commit(s) ' + $scope + ' nonpublic addresses (excluding bots/bare noreply@); values hidden. Establish owner locally.')
-        if ($Report.OtherTags -gt 0) { [void]$lines.Add('- ' + $Report.OtherTags + ' annotated tag(s) carry another tagger address.') }
+        $scope = if ($Report.Truncated) { 'in newest ' + $Report.Scanned + ' commits (capped)' } else { 'across ' + $Report.Scanned + ' commit(s)' }
+        [void]$lines.Add('- ' + $Report.OtherCommits + ' commit(s) ' + $scope + ' other addresses (excl. bots/noreply@); hidden. Fix locally.')
+        if ($Report.OtherTags -gt 0) { [void]$lines.Add('- ' + $Report.OtherTags + ' tag(s) have another tagger.') }
     }
     if (-not $Report.EffectiveOk) {
         [void]$lines.Add('- Nonpublic user.email; before commit: git config --local user.email ' + $script:PublicCommitEmail)
     }
-    [void]$lines.Add('- user.email/.mailmap NEVER repair stored Git identities.')
+    [void]$lines.Add('- user.email/.mailmap NEVER repair history.')
     return ($lines.ToArray() -join "`n")
 }

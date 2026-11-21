@@ -106,12 +106,11 @@ function Get-InstallAdvisories {
             $head = 'INSTALL LOCATION: ' + $finding.Family + ' would install ' + $finding.Package + ' into ' + ($onDrive.ToArray() -join ' and ') + ' on ' + $drive + '. '
             if (-not [string]::IsNullOrEmpty($finding.Advice)) { [void]$lines.Add($head + $finding.Advice) }
             elseif ($stale.Count -gt 0) {
-                [void]$lines.Add($head + 'The user already chose a location: set ' + (($stale | ForEach-Object { '`' + $_ + '`' }) -join ' and ') +
-                    ' in-command: user env newer than shell; no path question; ' +
-                    'verify where it landed. Rule: global-environment-rules.md -> Install Locations.')
+                [void]$lines.Add($head + 'set ' + (($stale | ForEach-Object { '`' + $_ + '`' }) -join ' and ') +
+                    ' in-command: user env newer than shell; no path question; verify target. global-environment-rules.md Install Locations.')
             }
             else {
-                [void]$lines.Add($head + 'BEFORE install/cleanup: global-environment-rules.md/global-project-lifecycle-rules.md FULL. Approved root/new G:\Program Files\<program-name>; ask only unavailable/different. Path!=consent.')
+                [void]$lines.Add($head + 'BEFORE install/cleanup: global-environment-rules.md/global-project-lifecycle-rules.md FULL. Approved root/new G:\Program Files\<program-name>; ask if unavailable/different. Path!=consent.')
             }
         }
     }

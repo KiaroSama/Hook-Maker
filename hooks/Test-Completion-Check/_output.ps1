@@ -53,7 +53,7 @@ function Write-Finding {
             if ($ddDot -gt 0) { $ddReason = $ddReason.Substring(0, $ddDot) }
             if ($ddReason.Length -gt 160) { $ddReason = $ddReason.Substring(0, 160) }
         }
-        if ($ddReason -eq '') { $ddReason = 'unresolved test-completion evidence' }
+        if ($ddReason -eq '') { $ddReason = 'unresolved test evidence' }
         [void]$all.Add('')
         [void]$all.Add('DEEP DEBUG: BLOCKED (' + $ddReason + ')')
     }

@@ -139,7 +139,7 @@ $securityPath = Join-Path $env:LOCALAPPDATA ('HookMaker/state/GithubBaselineChec
 $securitySeen = ''
 try { if (Test-Path -LiteralPath $securityPath -PathType Leaf) { $securitySeen = [IO.File]::ReadAllText($securityPath, [Text.Encoding]::UTF8) } } catch { }
 if ($securitySeen -cne $securityKey) {
-    $message = 'SECURITY: global-github-automation-rules.md Sec12 FULL first: owner/visibility/support/plan. Public CodeQL/Socket/Semgrep/CodeRabbit; private Socket/Semgrep; preserve existing. Graph/alerts/malware/update PRs distinct. Latest execution!=rate-limit/stale/skip. All-bot disposition; CodeRabbit uncovered head only; no duplicates/auto-merge. Free-first/shared quotas/financial consent/privacy. Verified private action links for blockers. Info-only: no actions; hook executes nothing.'
+    $message = 'SECURITY: global-github-automation-rules.md Sec12 FULL first: owner/visibility/plan. Public CodeQL/Socket/Semgrep/CodeRabbit; private Socket/Semgrep; keep existing. Graph/alerts/malware/update PRs distinct. Latest run!=rate-limit/stale/skip. Dispose all bots; CodeRabbit uncovered head only; no duplicates/auto-merge. Free-first, financial consent, privacy. Info-only: no actions.'
     $badgeNote += "`n" + $message
     try { [void][IO.Directory]::CreateDirectory((Split-Path -Parent $securityPath)); [IO.File]::WriteAllText($securityPath, $securityKey, [Text.UTF8Encoding]::new($false)) } catch { }
 }
@@ -368,18 +368,18 @@ if (-not $meaningfulCi -and $hasCode) {
     $detectedText = 'source files only'
     if ($detected.Count -gt 0) { $detectedText = ($detected -join ', ') }
     $findingPrefix = if ($workflowFiles.Count -eq 0) { 'No CI workflow' } else { 'Workflow files exist, but none provides blocking project validation' }
-    $findings += ('- ' + $findingPrefix + ': ' + $detectedText + '. Need blocking workflow_dispatch/reachable workflow_call lint/tests/types/build; least privilege/safe PRs.')
+    $findings += ('- ' + $findingPrefix + ': ' + $detectedText + '. Need blocking workflow_dispatch/workflow_call lint/tests/types/build; least privilege.')
 }
-foreach ($problem in $workflowProblems) { $findings += ('- Unsafe/non-blocking workflow: ' + $problem + '.') }
+foreach ($problem in $workflowProblems) { $findings += ('- Unsafe/non-blocking: ' + $problem + '.') }
 
 if ($dependabotPath -eq '') {
     if ($required.Count -gt 0) {
         $needed = @($required.Keys | Sort-Object | ForEach-Object { $_.Replace('|', ' at ') })
-        $findings += ('- No .github/dependabot.yml. Needed entries: ' + ($needed -join ', ') + '.')
+        $findings += ('- No .github/dependabot.yml. Need: ' + ($needed -join ', ') + '.')
     }
 }
 else {
-    if ($dependabotMalformed) { $findings += '- dependabot.yml version:2/updates missing or malformed; coverage UNKNOWN.' }
+    if ($dependabotMalformed) { $findings += '- dependabot.yml version:2/updates missing or bad; coverage UNKNOWN.' }
     $missing = @()
     foreach ($key in ($required.Keys | Sort-Object)) {
         if (-not $covered.ContainsKey($key)) { $missing += $key.Replace('|', ' at ') }
@@ -416,7 +416,7 @@ New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllLines($statePath, @($fingerprint, [DateTime]::UtcNow.ToString('o')))
 
 $scopeNote = if ($hasImmediateUnsafeRisk) {
-    'Urgent: pull_request_target + untrusted checkout; fix confirmed unsafe scope only.'
+    'Urgent: pull_request_target + untrusted checkout; fix confirmed scope only.'
 }
 else {
     'Owned dev/closure: standing scope; info-only: no actions.'

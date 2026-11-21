@@ -486,17 +486,11 @@ catch { }
 # ---- the advisory ------------------------------------------------------------
 $lines = New-Object System.Collections.Generic.List[string]
 [void]$lines.Add('Test-Plan-Check: advisory; global-test-rules.md FULL. Hook runs/edits nothing.')
-[void]$lines.Add('- Bound wall + idle/no-progress; unbounded != slow.')
-[void]$lines.Add('- No blind sleeps; wait on deterministic signal, readiness, or bounded poll.')
-[void]$lines.Add('- Workers max(2,min(8,cores-2)); no nesting or needless serialization.')
-[void]$lines.Add('- Finally reap owned tree/temp/state; leaked worker/port/lock/temp = fail.')
-[void]$lines.Add('- Discover suites dynamically; map every suite on disk to a CI bucket.')
-[void]$lines.Add('- CPU alone != hang; kill on bound or sustained load + no progress.')
-[void]$lines.Add('- Suite optimization needs before/after timing evidence.')
-[void]$lines.Add('- Edits: light checks/one seam smoke. Final: one heavy pass, fix together, rerun once.')
-[void]$lines.Add('- Optimize new/changed suites first (cheapest tier, shared setup, light imports, no blind sleeps, CI bucket); log timings in .ai/TESTING_NOTES.md.')
-[void]$lines.Add('- Detached background needs PID+start and bounded reaper; guard owns wall/idle/tree expiry; reap and report owned survivors.')
-[void]$lines.Add('- Heavy proof: one pushed-SHA CI, read exact result; repair missing CI coverage, no local duplicate unless gh/CI block logged with UTC in .ai/TESTING_NOTES.md.')
+[void]$lines.Add('- Bound wall + idle/no-progress; no blind sleeps (use signal/readiness/bounded poll).')
+[void]$lines.Add('- Workers max(2,min(8,cores-2)); no nesting; reap owned tree/temp/state.')
+[void]$lines.Add('- Discover suites dynamically; map every suite to CI; CPU!=hang (kill on bound/stall).')
+[void]$lines.Add('- Edits: light checks; final: one pushed-SHA CI batch (local fallback only if gh/CI blocked in .ai/TESTING_NOTES.md).')
+[void]$lines.Add('- Optimization needs before/after timings in .ai/TESTING_NOTES.md; bg needs PID+start + reaper.')
 if ($deepDebug) {
     # E-03: the standalone ::deep-debug codeword was detected in the prompt.
     # These are PLAN requirements the workflow's test plan must cover - reject
@@ -504,16 +498,16 @@ if ($deepDebug) {
     # stays with Utf8-Encoding-Check: this hook checks the plan and visible test
     # commands, it never runs a second repository encoding scanner.
     [void]$lines.Add('')
-    [void]$lines.Add('::deep-debug: regression/real fixture per defect; rerun failures; native+CI wall/idle bounds, worker cap, no blind sleeps/retries, cleanup; real invariants/security only; Ponytail once; UTF-8 exceptions logged; every Test-*.ps1 -> CI.')
+    [void]$lines.Add('::deep-debug: regression/real fixture per defect; rerun failures; bounds, worker cap, no blind sleeps, cleanup, invariants, Ponytail once, UTF-8 logs, every Test-*.ps1 -> CI.')
 }
 if ($findings.Count -gt 0) {
     [void]$lines.Add('')
-    [void]$lines.Add('Observed file:line; source-confirm before edits:')
+    [void]$lines.Add('Observed file:line (source-confirm first):')
     foreach ($finding in $findings) { [void]$lines.Add('- ' + $finding) }
 }
 if ($partialScan) {
     [void]$lines.Add('')
-    [void]$lines.Add('NOTE: this scan was PARTIAL - ' + $partialCause + '; sample only, not complete audit.')
+    [void]$lines.Add('PARTIAL: ' + $partialCause + '; sample only.')
 }
 if ($configWarnings.Count -gt 0) {
     [void]$lines.Add('')
@@ -561,12 +555,12 @@ try {
     }
     if ($suitesWithBaseline -gt 0) {
         [void]$lines.Add('')
-        [void]$lines.Add('- Local timing baselines: ' + $suitesWithBaseline + ' commands. Compare robust median/same workers; inspect material unexplained slowdown, never normalize.')
+        [void]$lines.Add('- Local timing baselines: ' + $suitesWithBaseline + ' commands. Compare median/same workers; investigate slowdowns.')
     }
 }
 catch { }
 [void]$lines.Add('')
-[void]$lines.Add('Silent until project test state changes or ' + $cooldownMinutes + 'min.')
+[void]$lines.Add('Silent on unchanged state or ' + $cooldownMinutes + 'm.')
 $message = ($lines.ToArray() -join "`n")
 
 exit (Write-HookResult -EventName $eventName -Kind 'advisory' -Message $message).ExitCode

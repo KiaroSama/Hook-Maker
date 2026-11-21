@@ -449,7 +449,7 @@ try {
     }
     [System.IO.File]::WriteAllText((Join-Path $legacyExtra 'f.txt'), 'edited during task', (New-Object System.Text.UTF8Encoding $false))
     $rUnknown = Fire -Cwd $legacy -SessionId 'legacy-sess'
-    Check 'an UNKNOWN (pre-fix) baseline fingerprint surfaces advisory uncertainty, never a false all-clear' ($rUnknown.Out -match 'unchanged unproved') $rUnknown.Out
+    Check 'an UNKNOWN (pre-fix) baseline fingerprint surfaces advisory uncertainty, never a false all-clear' ($rUnknown.Out -match 'baseline unavailable') $rUnknown.Out
     Check 'an UNKNOWN baseline fingerprint alone never hard-blocks' ($rUnknown.Out -notmatch '"decision":"block"') $rUnknown.Out
 
     # =====================================================================
@@ -490,7 +490,7 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $vocab1 'new.txt'), 'x', (New-Object System.Text.UTF8Encoding $false))
     $rV1 = Fire -Cwd $vocab1
     Check 'E-08(1): the dirty finding names staged, unstaged, AND untracked' (
-        $rV1.Out -match 'uncommitted change' -and $rV1.Out -match 'staged, unstaged, and/or untracked') $rV1.Out
+        $rV1.Out -match 'uncommitted change' -and $rV1.Out -match 'staged/unstaged/untracked') $rV1.Out
     # (5) unreconciled subagent work - the operational instruction covers it.
     Check 'E-08(5): the instruction covers unreconciled subagent work explicitly' (
         $rV1.Out -match 'global-repository-rules\.md FULL' -and
@@ -502,8 +502,7 @@ try {
     & git -C $vocab2 commit -q -m 'task change'
     $rV2 = Fire -Cwd $vocab2
     Check 'E-08(2,7): AHEAD names unpushed commits AND the local/remote final-SHA mismatch' (
-        $rV2.Out -match 'AHEAD of origin/main' -and $rV2.Out -match 'unpushed commits' -and
-        $rV2.Out -match 'local/remote final SHA mismatch') $rV2.Out
+        $rV2.Out -match 'AHEAD of origin/main' -and $rV2.Out -match 'push; SHA mismatch') $rV2.Out
     # (7) behind: the same SHA-mismatch vocabulary on the pull side.
     $vocab3 = New-PushedRepo 'vocab-behind'
     $vocab3Clone = Join-Path $ReposRoot 'vocab-behind-clone'
@@ -519,14 +518,14 @@ try {
     & git -C $vocab3Clone push -q origin main
     $rV3 = Fire -Cwd $vocab3
     Check 'E-08(7): BEHIND also names the local/remote final-SHA mismatch' (
-        $rV3.Out -match 'BEHIND origin/main' -and $rV3.Out -match 'local/remote final SHA mismatch') $rV3.Out
+        $rV3.Out -match 'BEHIND origin/main' -and $rV3.Out -match 'SHA mismatch') $rV3.Out
     # (3)+(4) changed pre-existing worktrees (HEAD unchanged) and task-created/
     # advanced branches+worktrees are pinned by the HM-08 scenarios above; (6)
     # ambiguous/unknown dirty evidence: the legacy-baseline scenario's wording
     # now names it explicitly.
     Check 'E-08(6): unknown dirty evidence is named ambiguous/UNKNOWN and never an all-clear' (
         $rUnknown.Out -match 'dirty-state UNKNOWN' -and $rUnknown.Out -match 'no all-clear' -and
-        $rUnknown.Out -match 'unchanged unproved') $rUnknown.Out
+        $rUnknown.Out -match 'baseline unavailable') $rUnknown.Out
 
     # =====================================================================
     Write-Host '--- order 55 step 2: commit identity and branch disposition ---' -ForegroundColor Cyan

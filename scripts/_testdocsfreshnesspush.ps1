@@ -135,7 +135,7 @@ $rGreen = Fire -HookPath $ci1.Hook.Script -Cwd $ci1.Repo -EventName 'Stop' -Loca
 Check 'docs repair retains tested parent identity without waiving latest-SHA checks' (
     $rGreen.Exit -eq 0 -and $rGreen.Out -notmatch '"decision"' -and $rGreen.Out -match 'DOCS FRESHNESS CHECK' -and $rGreen.Out -notmatch '\[skip ci\]|no suite' -and
     $rGreen.Out -match ('parent SHA ' + $ciHead.Substring(0, 7)) -and $rGreen.Out -match 'New SHA UNTESTED' -and
-    $rGreen.Out -match 'ONE manual final batch or exact blocker' -and $rGreen.Out -match 'no ancestor green/display-only run') $rGreen.Out
+    $rGreen.Out -match 'ONE manual final batch or exact blocker' -and $rGreen.Out -match 'no ancestor green') $rGreen.Out
 $ci2 = New-CiScenario 'CiNotRecorded'
 $rNotGreen = Fire -HookPath $ci2.Hook.Script -Cwd $ci2.Repo -EventName 'Stop' -LocalAppData $ci2.Hook.LocalAppData
 Check 'without a ci-green record the block keeps today''s text (no [skip ci])' (

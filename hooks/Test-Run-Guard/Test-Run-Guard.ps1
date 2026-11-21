@@ -379,7 +379,7 @@ if ($eventName -eq 'PreToolUse') {
     if ($verdict.Kind -eq 'none') { if ($configNote -ne '') { Write-Advisory -EventName 'PreToolUse' -Message $configNote.Trim() }; exit 0 }
     $repositoryState = Get-RepositoryStateEvidence -ProjectRoot $projectRoot
     if ($repositoryState.State -eq 'unavailable') {
-        $message = 'Test-Run-Guard: repository UNKNOWN; diagnosis=' + $repositoryState.Diagnosis + '; path-only ProjectKey=' + $projectKey + '. Authorized exact-root read/retry; no observation/input/identity/trust/ACL/owner edits.'
+        $message = 'Test-Run-Guard: repository UNKNOWN; diagnosis=' + $repositoryState.Diagnosis + '; key=' + $projectKey + '. Authorized read/retry only; no identity/ACL/owner edits.'
         if ($advisoryOnly) { Write-Advisory -EventName PreToolUse -Message $message }
         Write-Deny -Message $message
     }
@@ -427,9 +427,8 @@ if ($eventName -eq 'PreToolUse') {
         Write-Advisory -EventName 'PreToolUse' -Message (
             'test (' + $verdict.Command.Label +
             ') unbounded; scripts\Run-Tests-Guarded.ps1 absent from ' +
-            $projectRoot + ', exact replacement UNKNOWN; use owner with wall+' +
-            'timeout, an idle/no-progress timeout and process-tree cleanup, or the run cannot be proven to have ' +
-            'finished.' + $configNote)
+            $projectRoot + '; need wall+' +
+            'timeout, an idle/no-progress timeout and process-tree cleanup.' + $configNote)
     }
 
     $replacement = New-GuardedInvocation -RunnerPath $runnerPath -FilePath $verdict.Command.FilePath `
@@ -448,19 +447,15 @@ if ($eventName -eq 'PreToolUse') {
     # tells the model to pass that framework's own flag.
     $workerNote = ''
     if ($maxWorkers -gt 0) {
-        $workerNote = ' Worker cap=' + $maxWorkers +
-        ' (exported as HOOKMAKER_MAX_TEST_WORKERS). For a framework that ignores that variable, pass its own' +
-        ' worker flag at or below ' + $maxWorkers + '.'
+        $workerNote = ' Workers=' + $maxWorkers + ' (HOOKMAKER_MAX_TEST_WORKERS); pass flag <=' + $maxWorkers + '.'
     }
 
     # E-04: one concise line naming the deep-debug/test-policy requirements the
     # replacement already enforces, so the model can verify instead of re-derive.
     # Guidance only - the command guard above is unchanged.
-    $ddNote = ' CI first: exact pushed-SHA result; local guarded light seam or live-gh-proven CI block only.' +
-    ' Deep-debug bounds: owner/wall+idle' +
-    ', shared workers/tree cleanup/real exit, no blind sleeps.' +
-    ' Add documented native timeout only.' +
-    ' Optimized final CI after edits, run-itself/user exception; global-test-rules.md FULL, no detached owner.'
+    $ddNote = ' CI first: exact pushed-SHA result; local light/blocked fallback only.' +
+    ' Bounds: wall+idle, shared workers, tree cleanup, no blind sleeps, native timeout.' +
+    ' Final CI after edits; global-test-rules.md FULL, no detached owner.'
 
     # E-04: maintained-textual-output advisory. Fires ONLY when the raw command
     # VISIBLY writes output to a file (a standalone top-level '>'/'>>' token with
@@ -485,7 +480,7 @@ if ($eventName -eq 'PreToolUse') {
         }
     }
 
-    $message = 'Test-Run-Guard: advisory, ' + $verdict.Command.Label + ' lacks wall/idle/tree ownership; cleanup/outcome UNVERIFIED. Data-only guarded form:' + "`n" + $replacement + "`n" + 'Real exit (124=termination), -ResultPath read at PostToolUse.' + $workerNote + $ddNote + $utf8Note + $configNote
+    $message = 'Test-Run-Guard: advisory, ' + $verdict.Command.Label + ' unowned/unbounded:' + "`n" + $replacement + "`n" + 'Exit 124=timeout; PostToolUse reads -ResultPath.' + $workerNote + $ddNote + $utf8Note + $configNote
 
     if ($advisoryOnly) {
         # TEST_GUARD_ADVISORY_ONLY=1: the finding still goes out, the command
@@ -590,13 +585,11 @@ if ($isStale -and $null -eq $result) {
 
 if ($isStale) {
     # NEVER claims the run was fine. It says exactly what is missing.
-    $reason = if ($identityUnresolved) { 'argv/executable UNKNOWN; unrelated receipt!=identity' }
+    $reason = if ($identityUnresolved) { 'argv/exe UNKNOWN' }
     elseif ($null -eq $result) { 'guarded receipt absent' }
     elseif (-not $identityMatches) { 'receipt run/command/state differs; outcome UNPROVEN' }
-    else { 'the guarded result document is stale (last written ' + [Math]::Round($resultAgeMinutes) + ' minutes ago)' }
-    $message = 'Test-Run-Guard: ran, but ' + $reason + '. Outcome UNPROVEN, no pass claim. ' +
-    'ended, not PASS. scripts\Run-Tests-Guarded.ps1 rerun (Test-Run-Guard ' +
-    'Guard supplies exact argv/per-run -ResultPath: scripts\Run-Tests-Guarded.ps1.' + $configNote
+    else { 'stale receipt (' + [Math]::Round($resultAgeMinutes) + 'm old)' }
+    $message = 'Test-Run-Guard: ' + $reason + '. Outcome UNPROVEN, no pass claim. Rerun scripts\Run-Tests-Guarded.ps1.' + $configNote
     if (Test-ShouldReport -StatePath $reportStatePath -Fingerprint (Get-ShortHash ('stale|' + $verdict.Kind + '|' + [string]$identityUnresolved + '|' + [string]$identityMatches + '|' + [Math]::Round($resultAgeMinutes / 10)))) {
         Write-Advisory -EventName 'PostToolUse' -Message $message
     }
@@ -617,13 +610,13 @@ $startedUtc = [string](Get-Field $result 'startedUtc')
 $findings = New-Object System.Collections.Generic.List[string]
 
 if ($overall -eq 'terminated') {
-    $detail = if ($terminateDetail -ne '') { $terminateDetail } else { 'no detail recorded' }
+    $detail = if ($terminateDetail -ne '') { $terminateDetail } else { 'no detail' }
     [void]$findings.Add('TERMINATED after ' + $elapsed + 's; reason: ' +
         $(if ($terminateReason -ne '') { $terminateReason } else { 'unknown' }) + ' (' + $detail + '). ' +
-        'Suite unfinished; termination != test assertion failure.')
+        'termination != test assertion failure.')
     # The single most useful field when asking "where was it when it died".
     if ($lastProgress -ne '') { [void]$findings.Add('Last progress: ' + $lastProgress) }
-    else { [void]$findings.Add('No progress, possible pre-test hang.') }
+    else { [void]$findings.Add('No progress.') }
 }
 elseif ($null -ne $exitCode -and [int]$exitCode -ne 0) {
     [void]$findings.Add('Exit=' + [int]$exitCode + '; ' + $elapsed + 's; did NOT pass.')
@@ -631,8 +624,7 @@ elseif ($null -ne $exitCode -and [int]$exitCode -ne 0) {
 }
 
 if (@($leaked).Count -gt 0) {
-    [void]$findings.Add('PROCESS LEAK: ' + (@($leaked) -join ', ') + ' survived tree termination. ' +
-        'Verify/reap; ports/locks/temp may remain.')
+    [void]$findings.Add('PROCESS LEAK: ' + (@($leaked) -join ', ') + ' survived. Verify/reap.')
 }
 
 if ($findings.Count -eq 0) { exit 0 }    # clean run - stay silent

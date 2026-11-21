@@ -189,9 +189,9 @@ function Invoke-SkillSurfaceRegression {
     Check '4a: the per-skill routing line is present verbatim at SessionStart' ($ctx.Contains($sdRoutingA)) $ctx
     Check '4a: the security-audit entry line is present verbatim at SessionStart' ($ctx.Contains($sdRoutingB)) $ctx
     Check 'uncatalogued detection names exactly the one missing skill' (
-        $ctx -match 'UNCATALOGUED SKILLS \(advisory\): picked:pick-b - provider/source contract missing' -and $ctx -match 'Update rules') $ctx
+        $ctx -match 'UNCATALOGUED SKILLS \(advisory\): picked:pick-b - contract missing' -and $ctx -match 'update rules') $ctx
     Check 'a catalogue plugin missing from the install records is reported as removed' (
-        $ctx -match 'REMOVED PLUGINS \(advisory\): kdense@gone - removed plugin still catalogued; update rules') $ctx
+        $ctx -match 'REMOVED PLUGINS \(advisory\): kdense@gone - update rules') $ctx
     Check 'the other client''s catalogue record is never reported' ($ctx -notmatch 'only@codex') $ctx
     Check 'a host-bundled skill is never reported in either direction' ($ctx -notmatch 'code-review' -and $ctx -notmatch 'security-review') $ctx
     Check 'drift is advisory, never a block' ($r.Out -notmatch '"decision"') $r.Out
@@ -203,9 +203,9 @@ function Invoke-SkillSurfaceRegression {
     # Roster/dedupe/full body/tools/limits/minimum0 and exposure distinctions
     # are indirect behind the mandatory owner, not runtime proof from this hook.
     Check 'agent guidance names actual roots and full owner before selection, never spawns' (
-        $ctx -match 'BEFORE selection global-agent-rules.md FULL' -and $ctx -match 'global/project .claude/agents' -and
-        $ctx -match 'installed_plugins.json declared/default roots' -and
-        $ctx -match 'Gaps UNVERIFIED; no auto spawn') $ctx
+        $ctx -match 'global-agent-rules.md FULL' -and $ctx -match '\.claude/agents' -and
+        $ctx -match 'installed_plugins.json roots' -and
+        $ctx -match 'Gaps UNVERIFIED') $ctx
 
     $malformedHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR=(Join-Path $Work 'none'); CLAUDE_PLUGINS_FILE=(Join-Path $Work 'none.json'); CLAUDE_DESKTOP_SKILLS_ROOT=(Join-Path $sdClaude 'bad-desktop') }
     $badSession=Join-Path $sdClaude 'bad-desktop/owner/session'
@@ -227,7 +227,7 @@ function Invoke-SkillSurfaceRegression {
     Check 'shortlist retains installation key and version without guessing exposure' ($ctx -match 'package=alpha@m; version=1.0.0' -and $ctx -match 'configured!=exposed') $ctx
     Check 'an explicit-only skill is never shortlisted' ($ctx -notmatch 'alpha-three') $ctx
     Check 'a skill of a disabled plugin is never shortlisted' ($ctx -notmatch 'dormant-widget') $ctx
-    Check 'the shortlist says it is not the full inventory' ($ctx -match 'INSTALLED matches only: verify source/exposure/exact SKILL.md key') $ctx
+    Check 'the shortlist says it is not the full inventory' ($ctx -match 'INSTALLED matches: verify source/exposure/SKILL.md key') $ctx
     Check '4a: both routing lines are present verbatim at UserPromptSubmit' ($ctx.Contains($sdRoutingA) -and $ctx.Contains($sdRoutingB)) $ctx
 
     # ---- Codex fixture home -------------------------------------------------

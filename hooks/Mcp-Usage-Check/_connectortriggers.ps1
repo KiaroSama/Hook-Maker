@@ -167,7 +167,7 @@ function Get-ConnectorPreToolNotes {
         $fp = [string](Get-Field $ToolInput 'file_path')
         if ($fp -ne '' -and $fp -notmatch '(?i)(?:^|[\\/])(?:\.ai|specs|\.specify|\.claude|\.codex|plans|\.ignoreme)(?:[\\/]|$)') {
             if ($fp -match '(?i)\.(md|mdx|txt|rst|html)$' -and $RawText -notmatch '(?i)"skill"[ \t]*:[ \t]*"[A-Za-z0-9_.\-]*:?(?:humanizer|persian|great-russian)"') {
-                [void]$notes.Add('VOICE: prose edit before voice skill; load humanizer:humanizer, anthropic-skills:persian, or anthropic-skills:great-russian.')
+                [void]$notes.Add('VOICE: load humanizer:humanizer, anthropic-skills:persian, or anthropic-skills:great-russian before prose.')
             }
         }
     }

@@ -75,16 +75,15 @@ function Test-GraphMissesMarkdown {
     catch { }
     return $true
 }
-$markdownSetupLine = '- Missing ignored Markdown: graphify-markdown.md FULL -> graphify extract . --no-gitignore --code-only -> graphify update .; no execution.'
+$markdownSetupLine = '- Missing ignored Markdown: graphify-markdown.md FULL -> graphify extract . --no-gitignore --code-only -> graphify update .'
 $missesMarkdown = Test-GraphMissesMarkdown -Root $cwd
 
 # Reminder for the graph-EXISTS case (read the graph; do not re-browse the tree).
 $haveGraphNote = @(
-    'Graph-Read-Check: advisory graphify-out/graph.json; broad architecture/relationships/call/impact/refactor questions: scoped graph first.',
-    '- graphify query "<question>" for a specific question.',
-    '- graphify path "<A>" "<B>" for a relationship; graphify explain "<concept>" for a focused concept.',
-    '- Source-confirm; isolated/docs/config/secrets/small fixes exempt.',
-    'Both: CMM code/Graphify docs-media-cross-cut; covered changes: graphify update .; isolated edits exempt.'
+    'Graph-Read-Check: advisory graphify-out/graph.json; broad architecture/call/impact/refactor: scoped graph first.',
+    '- graphify query "<question>" | graphify path "<A>" "<B>" | graphify explain "<concept>"',
+    '- Source-confirm; small/docs/config/secrets exempt.',
+    'Both: CMM code/Graphify docs-media-cross-cut; covered changes: graphify update .'
 ) -join "`n"
 if ($graphExists -and $missesMarkdown) { $haveGraphNote += "`n" + $markdownSetupLine }
 
@@ -118,14 +117,14 @@ else {
     $graphifyAvailable = $null -ne (Get-Command graphify -ErrorAction SilentlyContinue)
     if ($graphifyAvailable) {
         $note = @(
-            'GRAPH: structural task; graphify-out/graph.json absent, CLI on PATH.',
-            'BEFORE build/navigation: graphify.md/graphify-markdown.md FULL; graphify --help. Small/docs/config/secret edits exempt; source-confirm; hook executes nothing.'
+            'GRAPH: structural task; graphify-out/graph.json absent (CLI on PATH).',
+            'BEFORE build: graphify.md/graphify-markdown.md FULL; graphify --help. Small/docs/config/secrets exempt; source-confirm; no execution.'
         ) -join "`n"
     }
     else {
         $note = @(
-            'GRAPH: structural task; graphify-out/graph.json absent, CLI absent from PATH.',
-            'Use bounded scoped source search/reads, not a whole-repo scan. Unchanged state stays silent.'
+            'GRAPH: structural task; graphify-out/graph.json absent (no CLI).',
+            'Use bounded scoped source search/reads, not whole-repo scan.'
         ) -join "`n"
     }
     $note += "`n" + '- BEFORE build: graphify-markdown.md FULL.'

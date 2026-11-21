@@ -105,7 +105,7 @@ if ($config.ContainsKey('LINE_THRESHOLD')) {
 # so a scan problem can never cost the guidance).
 $headline = "FILE SIZE: HARD CEILING $lineThreshold lines/source file; enforce before writing."
 $bullet1 = "- Count first: >=$($lineThreshold - 100) lines CLOSED to new code; cohesive module/wired imports."
-$bullet2 = "- Never exceed $lineThreshold or grow oversized files; extract instead."
+$bullet2 = "- Extract instead of exceeding $lineThreshold."
 $guidanceExitCode = 0
 if (-not $isStopEvent) {
     if ($eventName -eq 'UserPromptSubmit') {
@@ -116,7 +116,7 @@ if (-not $isStopEvent) {
             $headline,
             $bullet1,
             $bullet2,
-            "- BEFORE splitting: global-architecture-rules.md FULL. Tests/worker briefs count."
+            "- BEFORE splitting: global-architecture-rules.md FULL."
         )
     }
     $note = $lines -join "`n"
@@ -462,7 +462,7 @@ if ($baselineUsable -and -not $partial) {
                 [void]$blockLines.Add('- ' + $item.Path + ' (' + $item.Lines + ' lines now, ' + $item.Was + ' at session start): move the code added to ' + $item.Path + ' into a new responsibility-named file; do not create a wrapper.')
             }
             if ($grown.Count -gt $shown.Count) {
-                [void]$blockLines.Add('(+' + ($grown.Count - $shown.Count) + ' more file(s) in the same state, same recovery.)')
+                [void]$blockLines.Add('(+' + ($grown.Count - $shown.Count) + ' more, same recovery.)')
             }
             [void]$blockLines.Add('Each file: real responsibility extraction, no wrapper/forwarding/count dodge. Stop again; clear when each <=' + $lineThreshold + ' lines.')
             # Record the block the way every sibling Stop gate does, so
@@ -475,7 +475,7 @@ if ($baselineUsable -and -not $partial) {
 
 if ($offenders.Count -eq 0) {
     # R035: a valid partial scan is evidence of incomplete coverage, not clean.
-    if ($partial) { Write-Advisory ('LARGE FILE CHECK: coverage was INCOMPLETE: ' + $partialCause + '; no offenders observed, unseen files unverified. Retry the bounded scan after resolving the cause.') }
+    if ($partial) { Write-Advisory ('LARGE FILE CHECK: INCOMPLETE scan (' + $partialCause + '); unseen unverified. Retry after fixing.') }
     exit 0
 }
 
@@ -492,8 +492,8 @@ $more = ''
 if ($offenders.Count -gt $top.Count) {
     $more = ' and ' + ($offenders.Count - $top.Count) + ' more'
 }
-$partialNote = if ($partial) { ' (PARTIAL scan: ' + $partialCause + '; list incomplete, not whole-repo coverage.)' } else { '' }
-$reason = 'LARGE FILE CHECK: ' + $offenders.Count + ' source file(s) exceed ' + $lineThreshold + ' lines: ' + ($fileLines -join '; ') + $more + '.' + $partialNote + ' Existing overflow advisory; task-grown overflow gates. BEFORE extraction: global-architecture-rules.md FULL. Stop growth; verify build/tests; cooldown.'
+$partialNote = if ($partial) { ' (PARTIAL: ' + $partialCause + ')' } else { '' }
+$reason = 'LARGE FILE CHECK: ' + $offenders.Count + ' source file(s) exceed ' + $lineThreshold + ' lines: ' + ($fileLines -join '; ') + $more + '.' + $partialNote + ' Existing overflow advisory; task-grown overflow gates. BEFORE extraction: global-architecture-rules.md FULL. Stop growth; verify build/tests.'
 Write-Advisory $reason
 exit 0
 }

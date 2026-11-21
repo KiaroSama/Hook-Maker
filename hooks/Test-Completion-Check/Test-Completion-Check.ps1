@@ -269,7 +269,7 @@ if ($dispositionMode) {
     $saved = Read-JsonFile $statePath
     $pins = @(@(Get-Field $saved 'historicalDispositions') | Where-Object { [string](Get-Field $_ 'runId') -ceq $request.Request.Doc.runId -and [string](Get-Field $_ 'requestSha256') -ceq $request.Request.Sha256 })
     if ($pins.Count -ne 1) { throw 'Historical disposition was not persisted.' }
-    [Console]::Out.WriteLine('Historical disposition saved; original failure retained. No recovery/PASS/current proof.')
+    [Console]::Out.WriteLine('Historical disposition saved; original kept. No recovery/PASS/current proof.')
     exit 0
 }
 if ($recoveryMode) {
@@ -410,10 +410,9 @@ if ($null -ne $result -and $elapsedSeconds -gt 0) {
         $reg = Test-TimingRegression -History $tHist -WorkerCeiling $tWc -ElapsedSeconds $elapsedSeconds -ExcludeRunId $tRun
         if ($reg.IsRegression) {
             $timingRegressionLines = @(
-                'TEST COMPLETION CHECK (advisory): run ' + $reg.ElapsedSeconds + 's; median ' +
-                $reg.Median + 's/' + $reg.Samples + ' clean runs, same workers (' + $tWc + '). ' +
-                'meaningful slowdown - investigate a real regression (a new blind wait, added work, resource pressure) before ' +
-                'accepting it. Advisory only: it does not by itself block completion.')
+                'TEST COMPLETION CHECK: run ' + $reg.ElapsedSeconds + 's vs median ' +
+                $reg.Median + 's/' + $reg.Samples + ' (workers=' + $tWc + '). ' +
+                'Investigate slowdown; non-blocking.')
         }
     }
 }
@@ -450,8 +449,8 @@ if ($null -ne $rep) {
 if ($null -eq $result -and -not $observedCurrent -and $activePid -eq 0 -and $abandonedRuns.Count -eq 0 -and $script:pendingNotes.Count -eq 0 -and $script:MalformedEvidence.Count -eq 0) {
     if ($script:DeepDebugActive -and (Test-DdGateShouldReport ('noevidence|' + $stateFingerprint))) {
         Write-Finding -Blocking $true -Lines @(
-            '::deep-debug: no current guarded observation/result/active.',
-            'Affected suites: scripts\Run-Tests-Guarded.ps1; bounded argv, fresh scope proof.')
+            '::deep-debug: no current guarded run/result.',
+            'Run scripts\Run-Tests-Guarded.ps1; bounded argv, fresh scope proof.')
     }
     Write-UnknownNoteDiagnostic
     Write-SurvivorAdvisory
@@ -466,7 +465,7 @@ if ($incidentKey -ne '' -and (Test-ResultIncidentResolved -Doc $result -Path $re
     if ($script:DeepDebugActive -and (Test-DdGateShouldReport ('resolvedonly|' + $stateFingerprint))) {
         Write-Finding -Blocking $true -Lines @(
             '::deep-debug: past resolved != CURRENT proof.',
-            'Affected suites: scripts\Run-Tests-Guarded.ps1; fresh clean current-state receipt.')
+            'Run scripts\Run-Tests-Guarded.ps1; fresh clean receipt.')
     }
     Write-UnknownNoteDiagnostic
     Write-SurvivorAdvisory
@@ -504,8 +503,8 @@ if ($cleanupInstalled) {
 if ($activePid -gt 0) {
     Save-CompletionState
     Write-Finding -Blocking $true -Lines @(
-        'STILL ACTIVE owner ' + $activePid + '; outcome UNKNOWN/incomplete.',
-        'Await exit/receipt or deliberate guarded stop+outcome. No pre-exit result.')
+        'STILL ACTIVE owner ' + $activePid + '; UNKNOWN.',
+        'Await exit/receipt or guarded stop; no pre-exit result.')
 }
 
 # ---- 1b. a guarded run DIED without recording how it ended (OWNERLESS) -----
@@ -524,12 +523,12 @@ if ($abandonedRuns.Count -gt 0) {
     Save-CompletionState
     Write-Finding -Blocking $true -Lines @(
         'OWNERLESS/DIED. ' +
-            $(if ($abandonedRuns.Count -gt 1) { 'There are ' + $abandonedRuns.Count + ' such runs; the first is reported here. ' } else { '' }) +
-            'Evidence: ' + $ab.Detail + ', and no guarded result document exists for ' + $(if ($ab.RunId -ne '') { 'runId=' + $ab.RunId } else { 'this marker' }) + '.',
+            $(if ($abandonedRuns.Count -gt 1) { '' + $abandonedRuns.Count + ' runs; first shown. ' } else { '' }) +
+            $ab.Detail + '; no result for ' + $(if ($ab.RunId -ne '') { 'runId=' + $ab.RunId } else { 'marker' }) + '.',
         'UNKNOWN AND UNRECOVERABLE; later run!=original pass.',
-        'Rerun: scripts\Run-Tests-Guarded.ps1. Note cause/missed detection/proven prevention: .ai/{BUGS,TESTING_NOTES,COMMANDS,LESSON}.md.',
-        'Substantive tag, not ack: `' + (Get-IncidentTag $ab.Key) + '`.',
-        'Proven abandoned/no lesson only: review ' + $ab.Path)
+        'Rerun scripts\Run-Tests-Guarded.ps1; note cause: .ai/{BUGS,TESTING_NOTES,COMMANDS,LESSON}.md.',
+        'Tag `' + (Get-IncidentTag $ab.Key) + '`.',
+        'Review ' + $ab.Path)
 }
 
 # ---- 2/3. a terminated or leaking run -------------------------------------
@@ -543,18 +542,18 @@ if ($incidentKey -ne '' -and -not (Test-ResultIncidentResolved -Doc $result -Pat
     Register-PendingNote -Key $incidentKey -Reason $incidentReason -Origin (New-NoteOrigin -Kind result -Path $resultEntryPath)
     Save-CompletionState
     $lines = New-Object System.Collections.Generic.List[string]
-    [void]$lines.Add('' + $incidentReason + '; runner receipt confirms.')
+    [void]$lines.Add('' + $incidentReason + '.')
     if ($elapsedSeconds -gt 0) { [void]$lines.Add('Elapsed: ' + $elapsedSeconds + 's.') }
-    if ($lastProgress -ne '') { [void]$lines.Add('Last recorded progress: ' + $lastProgress) }
+    if ($lastProgress -ne '') { [void]$lines.Add('Last progress: ' + $lastProgress) }
     if ($leaked.Count -gt 0) {
-        [void]$lines.Add('Verify/reap PIDs ' + (@($leaked) -join ', ') + ' (Get-Process -Id <id>); guarded rerun overall=ok/leakedProcessIds=[].')
+        [void]$lines.Add('Verify/reap PIDs ' + (@($leaked) -join ', ') + ' (Get-Process -Id <id>); rerun overall=ok, leakedProcessIds=[].')
     }
     else {
-        [void]$lines.Add('Fix ' + $(if ($terminateReason -ne '') { $terminateReason } else { 'termination' }) + ' cause, not ceilings. Rerun scripts\Run-Tests-Guarded.ps1: overall=ok required.')
+        [void]$lines.Add('Fix ' + $(if ($terminateReason -ne '') { $terminateReason } else { 'termination' }) + ' cause, not ceilings. Rerun scripts\Run-Tests-Guarded.ps1.')
     }
     [void]$lines.Add('.ai/{BUGS,TESTING_NOTES,COMMANDS,LESSON}.md: cause/prevention/recovery, not ack.')
-    [void]$lines.Add('Each incident: own tag `' + (Get-IncidentTag $incidentKey) + '`; untagged != clear.')
-    [void]$lines.Add('Identity recovery, newer clean receipt: pwsh -NoProfile -File "' + $PSCommandPath + '" -ResolveIncident ' + $incidentKey + ' -RecoveryRunId "<verified recovery run id>" -ProjectRoot "' + $cwd + '" -Reason "<equivalent scope + verified repair, >=80 UTF-8 bytes>". Also prove note+cleanup.')
+    [void]$lines.Add('Tag `' + (Get-IncidentTag $incidentKey) + '`; untagged != clear.')
+    [void]$lines.Add('pwsh -NoProfile -File "' + $PSCommandPath + '" -ResolveIncident ' + $incidentKey + ' -RecoveryRunId "<id>" -ProjectRoot "' + $cwd + '" -Reason "<>=80B verified repair>". Prove note+cleanup.')
     [void]$lines.Add('Proof: one project guarded run only, not broader test success.')
     Write-Finding -Blocking $true -Lines $lines.ToArray()
 }
@@ -574,14 +573,14 @@ if ($null -ne $result -and $overall -eq 'failed' -and ($resultIsCurrentEvidence 
 if ($script:MalformedEvidence.Count -gt 0) {
     Write-Finding -Blocking $true -Lines @(
         'Test-Completion-Check: malformed runId/commandFingerprint/observedUtc UNKNOWN; original=' + $script:MalformedEvidence[0] + '.',
-        'Retain original; -AuditEvidence -AuditPath <new>, verify producer/scope; UNKNOWN, no backfill/delete/fake SUCCESS.')
+        'Retain original; -AuditEvidence -AuditPath <new>; UNKNOWN, no fake SUCCESS.')
 }
 
 # An unreadable legacy outcome cannot be hidden by unrelated fresh success.
 if ($null -ne $rep -and $rep.Class -eq 'unknown-negative' -and -not $repAccounted) {
     Write-Finding -Blocking $true -Lines @(
         'unresolved runId=' + [string](Get-Field $result 'runId') + '; commandFingerprint=' + [string](Get-Field $result 'commandFingerprint') + '; observedUtc=<no observation>; failedField=overall:unknownOrMalformed.',
-        'Retain receipt; -AuditEvidence/-AuditPath <new local>, inspect producer; UNKNOWN, no fake SUCCESS/unrelated CI.')
+        'Retain receipt; -AuditEvidence -AuditPath <new>; UNKNOWN, no fake SUCCESS.')
 }
 
 # ---- 5. exact unresolved observation diagnostic ----
@@ -597,7 +596,7 @@ if ($null -ne $result -and $resultIsCurrentEvidence -and $overall -eq 'ok') {
     if ($incidentKey -ne '') { Add-ResolvedIncident $incidentKey }
     if ($alwaysRequireNote -and @($script:pendingNotes.Values | Where-Object { Test-NoteObligationActionable $_ }).Count -eq 0) {
         $runKey = Get-ShortHash ('run|' + $script:ResultTicks + '|' + $projectKey)
-        Register-PendingNote -Key $runKey -Reason 'a guarded test run completed and TEST_COMPLETION_ALWAYS_REQUIRE_NOTE is enabled' -Origin (New-NoteOrigin -Kind always -Path $resultEntryPath)
+        Register-PendingNote -Key $runKey -Reason 'always-require-note run completed' -Origin (New-NoteOrigin -Kind always -Path $resultEntryPath)
     }
 }
 
@@ -628,8 +627,8 @@ if ($script:DeepDebugActive) {
     }
     elseif (Test-DdGateShouldReport ('staleorunproven|' + $stateFingerprint)) {
         Write-Finding -Blocking $true -Lines @(
-            '::deep-debug STALE/nonclean/noncurrent evidence cannot pass.',
-            'Affected suites: scripts\Run-Tests-Guarded.ps1; fresh clean current-state receipt before finish.')
+            '::deep-debug STALE/nonclean/noncurrent evidence.',
+            'Rerun scripts\Run-Tests-Guarded.ps1.')
     }
 }
 if ($timingRegressionLines.Count -gt 0) { Write-Finding -Blocking $false -Lines $timingRegressionLines }

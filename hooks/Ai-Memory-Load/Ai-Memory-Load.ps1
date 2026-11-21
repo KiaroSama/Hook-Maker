@@ -153,22 +153,22 @@ $lines = New-Object System.Collections.Generic.List[string]
 if ($invalidUtf8) {
     # E-06: legacy non-UTF-8 memory is surfaced by path + classification ONLY.
     # No raw bytes, no replacement-character mojibake, no silent transcoding.
-    [void]$lines.Add('Ai-Memory-Load: advisory, memory.md invalid UTF-8; contents withheld, no raw bytes.')
-    [void]$lines.Add('Review explicit UTF-8 conversion; hook never transcodes, valid router loads normally.')
+    [void]$lines.Add('Ai-Memory-Load: memory.md invalid UTF-8; no raw bytes.')
+    [void]$lines.Add('Review explicit UTF-8 conversion; hook never transcodes.')
 }
 else {
-    [void]$lines.Add('AI MEMORY LOADED - .ai/memory.md (project startup router):')
+    [void]$lines.Add('AI MEMORY LOADED - .ai/memory.md:')
     [void]$lines.Add('')
     [void]$lines.Add($content)
     [void]$lines.Add('')
     if ($truncated) {
-        [void]$lines.Add('(truncated at ' + $maxChars + ' chars - read .ai/memory.md directly for the rest.)')
+        [void]$lines.Add('(truncated at ' + $maxChars + ' chars - read .ai/memory.md directly.)')
     }
 }
 if ($otherFiles.Count -gt 0) {
-    [void]$lines.Add('Other .ai/ files (not loaded; router selects): ' + ($otherFiles -join ', '))
+    [void]$lines.Add('Other .ai/: ' + ($otherFiles -join ', '))
 }
-[void]$lines.Add('memory.md first; task files only. Unchanged router/list: silent.')
+[void]$lines.Add('memory.md first; unchanged: silent.')
 if ($deepDebug) {
     # E-06: routing text only for the standalone ::deep-debug codeword - the
     # loader names the set, the agent loads only what exists and is relevant.

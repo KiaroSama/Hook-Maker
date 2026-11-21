@@ -662,10 +662,10 @@ if (Test-DeploymentAcknowledgment $cwd (Get-HookClientId) $script:ReleaseHeadSha
 $reasonLines = New-Object System.Collections.Generic.List[string]
 [void]$reasonLines.Add('CLOUDFLARE DEPLOY CHECK: ' + $wranglerConfig + '; SHA=' + $script:ReleaseHeadSha + '; clean/synced, exact-SHA CI green, cleanup clean. Config != deploy.')
 # Deployment advice cannot authorize provider changes or block completion.
-[void]$reasonLines.Add('BEFORE deploy: global-project-lifecycle-rules.md + cloudflare/wrangler contracts FULL. Authorized release only: tests/build, exact SHA/CI, clean secrets/temp, reviewed bindings/migrations. Partial/docs/unknown: NO deploy.')
-[void]$reasonLines.Add('Explicit Wrangler env: review account/name, vars, D1/KV/R2/Queues/DO+migrations, routes/domains/crons, CLI/build; no secret values.')
+[void]$reasonLines.Add('BEFORE deploy: global-project-lifecycle-rules.md + cloudflare/wrangler contracts FULL. Authorized release only: exact SHA/CI, clean secrets/temp, reviewed bindings/migrations. Partial/docs/unknown: NO deploy.')
+[void]$reasonLines.Add('Explicit Wrangler env: review account/name, vars, D1/KV/R2/Queues/DO+migrations, routes/crons; no secret values.')
 [void]$reasonLines.Add('Warranted only: ' + $deployCommand)
-[void]$reasonLines.Add('Exit0!=live proof; exact-SHA deploy + real health/log/route/binding postchecks or reviewed no-ship. Record env/Worker/SHA/version/URL, no secrets. Missing=UNVERIFIED; never blind redeploy. No consent inferred.')
+[void]$reasonLines.Add('Exit0!=live proof; exact-SHA deploy + real health/log/route/binding postchecks or reviewed no-ship. Record env/Worker/SHA/URL, no secrets. Missing=UNVERIFIED; no blind redeploy.')
 [void]$reasonLines.Add('Ack without deploy (HOOKS.md): pwsh -NoProfile -File "' + $PSCommandPath + '" -Acknowledge -ProjectRoot "' + $cwd + '" -Client ' + (Get-HookClientId) + ' -Commit ' + $script:ReleaseHeadSha + ' -EvidencePath "<reviewed local evidence.json>" -ReviewConfirmed.')
 $reason = $reasonLines.ToArray() -join "`n"
 # Record the block so THIS hook's own re-entry is recognised; another

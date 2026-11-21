@@ -448,30 +448,30 @@
         $r.Out -match 'Ledger bugs/phases first' -and
         $r.Out -notmatch 'native /goal' -and $r.Out -match 'native /ponytail:ponytail-audit') $r.Out
     Check 'agent orchestration separates discovery/prepared tasks and forbids recursion' (
-        $r.Out -match '::multi-agent codeword' -and
-        $r.Out -match 'dispatching-parallel-agents: independent discovery' -and
-        $r.Out -match 'subagent-driven-development: prepared tasks' -and
-        $r.Out -match 'Flatten/dedup/cycle-check once, no nested/recursive agents') $r.Out
+        $r.Out -match '::multi-agent:' -and
+        $r.Out -match 'dispatching-parallel-agents' -and
+        $r.Out -match 'subagent-driven-development' -and
+        $r.Out -match 'Dedupe/acyclic, no nesting') $r.Out
     # Explicit phase routes are advice, never proof a capability was executed.
     Check 'context, design, diagnosis and runtime phases retain owners and exact capability routes' (
         $r.Out -match 'EVERY bug/phase: WORKFLOWS\.md Deep Debug/skill-policy-deep-debug\.md FULL' -and
-        $r.Out -match 'audit-context-building: substantial/unfamiliar/architecture/security' -and
-        $r.Out -match 'brainstorming: real design ambiguity' -and
-        $r.Out -match 'writing-plans: complex repair lacking plan' -and
+        $r.Out -match 'audit-context-building: large/unfamiliar/security' -and
+        $r.Out -match 'brainstorming: ambiguity' -and
+        $r.Out -match 'writing-plans: complex repair' -and
         $r.Out -match 'Bug: systematic-debugging/test-driven-development/verification-before-completion' -and
-        $r.Out -match 'runtime question: local DAP/debugger OR trusted debug-live DebugMCP/VS Code') $r.Out
+        $r.Out -match 'runtime: DAP/debug-live') $r.Out
     Check 'plan routing remains subset-only, not blanket activation' (
-        $r.Out -match 'Real plan: executing-plans, test-driven-development, requesting-code-review, verification-before-completion' -and $r.Out -match 'Subset/client syntax only') $r.Out
+        $r.Out -match 'Plan: executing-plans, test-driven-development, requesting-code-review, verification-before-completion' -and $r.Out -match 'Subset/client syntax only') $r.Out
     Check 'security work retains phase owners, a job subset and explicit authority' (
         $r.Out -match 'WORKFLOWS\.md Deep Debug/skill-policy-deep-debug\.md FULL' -and
-        $r.Out -match 'Security subset by job:' -and
-        $r.Out -match 'Active testing needs ownership/consent/scope' -and $r.Out -match 'no mutation') $r.Out
+        $r.Out -match 'Security:' -and
+        $r.Out -match 'Active needs ownership/consent/scope' -and $r.Out -match 'no mutation') $r.Out
     Check 'category labels alone cannot satisfy installed identity/loadability' (
         $r.Out -match 'exact loadable SKILL\.md key/exposure' -and
         $r.Out -match 'hook invokes nothing') $r.Out
     Check 'active security and invariants require phase owners without usage padding' (
         $r.Out -match 'WORKFLOWS\.md Deep Debug/skill-policy-deep-debug\.md FULL' -and
-        $r.Out -match 'Active testing needs ownership/consent/scope' -and
+        $r.Out -match 'Active needs ownership/consent/scope' -and
         $r.Out -match 'boundary invariant only, never usage padding' -and
         $r.Out -match 'read/presence/library/trivial!=use') $r.Out
     Check 'closure retains phase owners, one Ponytail pass and bounded final proof' (

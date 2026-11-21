@@ -184,7 +184,7 @@ function Read-BoundedIntSetting {
     $parsed = 0
     if ([int]::TryParse($raw, [ref]$parsed) -and $parsed -ge $Min -and $parsed -le $Max) { return $parsed }
     if (-not [string]::IsNullOrWhiteSpace($raw)) {
-        [void]$configWarnings.Add($Key + ' is not an integer in ' + $Min + '..' + $Max + '; using the default ' + $Default + '.')
+        [void]$configWarnings.Add($Key + ' is not an integer in ' + $Min + '..' + $Max + '; default ' + $Default + '.')
     }
     return $Default
 }
@@ -294,11 +294,11 @@ if ($GitPrePush) {
     foreach ($line in $refUpdateLines) {
         $parts = @($line.Trim() -split '\s+')
         if ($parts.Count -ne 4) {
-            [void]$coverageErrors.Add('Malformed ref, outgoing UNKNOWN.')
+            [void]$coverageErrors.Add('Malformed ref.')
             continue
         }
         if ($parts[1] -notmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$' -or $parts[3] -notmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') {
-            [void]$coverageErrors.Add('ref ' + $parts[0] + ' malformed ref, UNKNOWN.')
+            [void]$coverageErrors.Add('ref ' + $parts[0] + ' malformed.')
             continue
         }
         if ($parts[1] -match '^0+$') { continue }    # deletion - nothing pushed
@@ -311,12 +311,12 @@ if ($GitPrePush) {
         $sent = New-Object System.Collections.Generic.HashSet[string]
         $objectLines = @(Invoke-QuietCommand -FilePath git -TimeoutSeconds 300 -ArgumentList (@('-C', $cwd, 'rev-list', '--ignore-missing', '--objects-edge-aggressive', '--no-object-names', '--filter=object:type=blob') + $range))
         if ($LASTEXITCODE -ne 0) {
-            [void]$coverageErrors.Add('rev-list failed, outgoing UNKNOWN.')
+            [void]$coverageErrors.Add('rev-list failed.')
         }
         foreach ($objectLine in $objectLines) { if ($objectLine) { [void]$sent.Add(([string]$objectLine).Trim()) } }
         $rawLines = @(Invoke-QuietCommand -FilePath git -TimeoutSeconds 300 -ArgumentList (@('-C', $cwd, 'log', '--ignore-missing', '--root', '--raw', '-r', '--no-abbrev', '--no-renames', '--format=', '--diff-filter=d') + $range))
         if ($LASTEXITCODE -ne 0) {
-            [void]$coverageErrors.Add('Outgoing inventory failed, UNKNOWN.')
+            [void]$coverageErrors.Add('inventory failed.')
         }
         $seenBlobs = New-Object System.Collections.Generic.HashSet[string]
         foreach ($rawLine in $rawLines) {
@@ -328,7 +328,7 @@ if ($GitPrePush) {
             if ($meta.Count -lt 5) { continue }
             $newSha = [string]$meta[3]
             if ($newSha -eq $allZero -or -not $sent.Contains($newSha)) { continue }
-            try { $blobPath = (ConvertFrom-GitQuotedPath ($lineText.Substring($tabIndex + 1))).Replace('\', '/') } catch { [void]$coverageErrors.Add('Outgoing path decode UNKNOWN'); continue }
+            try { $blobPath = (ConvertFrom-GitQuotedPath ($lineText.Substring($tabIndex + 1))).Replace('\', '/') } catch { [void]$coverageErrors.Add('path decode UNKNOWN'); continue }
             if (-not $seenBlobs.Add($newSha + '|' + $blobPath)) { continue }
             [void]$blobs.Add([pscustomobject]@{ Sha = $newSha; Path = $blobPath })
         }
@@ -342,17 +342,17 @@ if ($GitPrePush) {
         foreach ($blob in $toCheck) {
             $read = $reads[$blob.Sha]
             if ($read.Failed) {
-                [void]$coverageErrors.Add('outgoing blob ' + $blob.Path + ' unreadable (' + [string](Get-Field $read 'Failure') + '); UNKNOWN')
+                [void]$coverageErrors.Add($blob.Path + ' unreadable (' + [string](Get-Field $read 'Failure') + ')')
                 continue
             }
             $class = Resolve-ClassWithExtension -RelativePath $blob.Path -RawClass $read.Class
             if ($script:ViolationClasses -contains $class) {
                 if ($violatedPaths.Add($blob.Path)) {
-                    [void]$violations.Add($blob.Path + ' - ' + (Get-ClassLabel $class) + ' in an outgoing commit')
+                    [void]$violations.Add($blob.Path + ' - ' + (Get-ClassLabel $class) + ' (outgoing)')
                 }
             }
             elseif ($class -eq 'oversized') {
-                [void]$coverageErrors.Add('outgoing text blob ' + $blob.Path + ' >UTF8_MAX_FILE_KB UNKNOWN; review cap.')
+                [void]$coverageErrors.Add($blob.Path + ' >UTF8_MAX_FILE_KB.')
             }
         }
     }
@@ -362,12 +362,12 @@ if ($GitPrePush) {
     [void]$lines.Add('UTF8 advisory, outgoing findings:')
     $shown = 0
     foreach ($violation in $violations.ToArray()) {
-        if ($shown -ge $maxFindings) { [void]$lines.Add('(+' + ($violations.Count - $shown) + ' more non-UTF8)'); break }
+        if ($shown -ge $maxFindings) { [void]$lines.Add('(+' + ($violations.Count - $shown) + ' more)'); break }
         [void]$lines.Add('- ' + $violation)
         $shown++
     }
     foreach ($coverageError in $coverageErrors.ToArray()) { [void]$lines.Add('- Outgoing PARTIAL: ' + $coverageError + '.') }
-    [void]$lines.Add($(if ($violations.Count) { 'UTF-8/required-encoding exception: ' + $exceptionFileSetting + '.' } else { 'UNKNOWN: repair transport/deadline/resources, not exceptions; no auto retry.' }))
+    [void]$lines.Add($(if ($violations.Count) { 'Exception: ' + $exceptionFileSetting + '.' } else { 'UNKNOWN: fix transport/resources.' }))
     foreach ($warning in $configWarnings.ToArray()) { [void]$lines.Add('Utf8-Encoding-Check .env: ' + $warning) }
     # R035: valid-repository coverage failures advise UNKNOWN, never all-clear.
     exit (Write-NativeFinding -HookName Utf8-Encoding-Check -Message ($lines.ToArray() -join ' ') -ProjectRoot $cwd)
@@ -413,23 +413,23 @@ if ($eventName -eq 'SessionStart') {
     if ($legacy.Count -eq 0 -and -not $walk.Partial -and $oversizedCount -eq 0 -and $unreadableCount -eq 0 -and $configWarnings.Count -eq 0) { exit 0 }
 
     $lines = New-Object System.Collections.Generic.List[string]
-    [void]$lines.Add('UTF-8 baseline advisory, read-only.')
+    [void]$lines.Add('UTF-8 baseline advisory.')
     if ($legacy.Count -gt 0) {
-        [void]$lines.Add('Legacy advisory, edits strict UTF-8:')
+        [void]$lines.Add('Legacy (edits strict UTF-8):')
         $shown = 0
         foreach ($entry in $legacy) {
-            if ($shown -ge $maxFindings) { [void]$lines.Add('(+' + ($legacy.Count - $shown) + ' more not shown)'); break }
+            if ($shown -ge $maxFindings) { [void]$lines.Add('(+' + ($legacy.Count - $shown) + ' more)'); break }
             [void]$lines.Add('- ' + $entry.p + ' - ' + (Get-ClassLabel $entry.c))
             $shown++
         }
-        [void]$lines.Add('Review conversion or scoped exception: ' + $exceptionFileSetting + ' {version:1,exceptions:[{path,encoding,reason,verification}]}.')
+        [void]$lines.Add('Convert or exception: ' + $exceptionFileSetting + ' {version:1,exceptions:[{path,encoding,reason,verification}]}.')
     }
     # [string] casts: an [int] LEFT of '+' would try to numerically convert
     # the text and throw under $ErrorActionPreference='Stop'.
     if ($oversizedCount -gt 0) { [void]$lines.Add(([string]$oversizedCount) + ' >UTF8_MAX_FILE_KB UNKNOWN.') }
-    if ($unreadableCount -gt 0) { [void]$lines.Add(([string]$unreadableCount) + ' unreadable, UNVERIFIED.') }
+    if ($unreadableCount -gt 0) { [void]$lines.Add(([string]$unreadableCount) + ' unreadable.') }
     if ($walk.Partial) {
-        [void]$lines.Add('Baseline PARTIAL: ' + $walk.PartialCause + '; no findings!=clear.')
+        [void]$lines.Add('Baseline PARTIAL: ' + $walk.PartialCause + '.')
     }
     Write-HookMessage -Lines $lines.ToArray() -Blocking $false
 }
@@ -486,7 +486,7 @@ if ($inGitRepo) {
     $candidateMap = @{}   # path -> staged flag
     $statusLines = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'status', '--porcelain', '--untracked-files=all') | Where-Object { $_ })
     if ($LASTEXITCODE -ne 0) {
-        [void]$unknownNotes.Add('git status failed, changes UNKNOWN.')
+        [void]$unknownNotes.Add('git status failed.')
     }
     else {
         foreach ($rawLine in $statusLines) {
@@ -500,7 +500,7 @@ if ($inGitRepo) {
                 $arrowIndex = $relative.IndexOf(' -> ')
                 if ($arrowIndex -ge 0) { $relative = $relative.Substring($arrowIndex + 4) }
             }
-            try { $relative = (ConvertFrom-GitQuotedPath $relative.Trim()).Replace('\', '/') } catch { [void]$unknownNotes.Add('Changed path decode UNKNOWN'); continue }
+            try { $relative = (ConvertFrom-GitQuotedPath $relative.Trim()).Replace('\', '/') } catch { [void]$unknownNotes.Add('Path decode UNKNOWN'); continue }
             if ($relative -eq '' -or (Test-PathExcluded $relative)) { continue }
             $indexState = $code.Substring(0, 1)
             $staged = ($indexState -ne ' ' -and $indexState -ne '?' -and $indexState -ne '!')
@@ -513,11 +513,11 @@ if ($inGitRepo) {
         if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($currentHead) -and $currentHead.Trim() -ne $baselineHead) {
             $diffLines = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'diff', '--name-only', $baselineHead, $currentHead.Trim()) | Where-Object { $_ })
             if ($LASTEXITCODE -ne 0) {
-                [void]$unknownNotes.Add('Baseline diff failed, changes UNKNOWN')
+                [void]$unknownNotes.Add('Baseline diff failed.')
             }
             else {
                 foreach ($rawLine in $diffLines) {
-                    try { $relative = (ConvertFrom-GitQuotedPath ([string]$rawLine).Trim()).Replace('\', '/') } catch { [void]$unknownNotes.Add('Committed path decode UNKNOWN'); continue }
+                    try { $relative = (ConvertFrom-GitQuotedPath ([string]$rawLine).Trim()).Replace('\', '/') } catch { [void]$unknownNotes.Add('Diff path decode UNKNOWN'); continue }
                     if ($relative -eq '' -or (Test-PathExcluded $relative)) { continue }
                     if (-not $candidateMap.ContainsKey($relative)) { $candidateMap[$relative] = $false }
                 }
@@ -548,7 +548,7 @@ if ($inGitRepo) {
         if ($fileExists) {
             $read = Get-Utf8FileClassification -Path $fullPath -MaxFullBytes $maxFileBytes -DeadlineUtc $checkTimerDeadline
             if ($read.Failed) {
-                [void]$unknownNotes.Add($candidatePath + ' unreadable, encoding UNKNOWN.')
+                [void]$unknownNotes.Add($candidatePath + ' unreadable.')
             }
             else {
                 $class = Resolve-ClassWithExtension -RelativePath $candidatePath -RawClass $read.Class
@@ -557,7 +557,7 @@ if ($inGitRepo) {
                     $worktreeViolation = $true
                 }
                 elseif ($class -eq 'oversized') {
-                    [void]$unknownNotes.Add($candidatePath + ' >UTF8_MAX_FILE_KB, encoding UNKNOWN.')
+                    [void]$unknownNotes.Add($candidatePath + ' >UTF8_MAX_FILE_KB.')
                 }
             }
         }
@@ -576,7 +576,7 @@ if ($inGitRepo) {
                     $stagedSha = [string]$metaParts[1]
                     $read = Get-GitBlobBytes -Cwd $cwd -BlobSha $stagedSha -MaxFullBytes $maxFileBytes -DeadlineUtc $checkTimerDeadline
                     if ($read.Failed) {
-                        [void]$unknownNotes.Add($candidatePath + ' staged unreadable, encoding UNKNOWN.')
+                        [void]$unknownNotes.Add($candidatePath + ' staged unreadable.')
                     }
                     else {
                         $class = Resolve-ClassWithExtension -RelativePath $candidatePath -RawClass $read.Class
@@ -584,7 +584,7 @@ if ($inGitRepo) {
                             [void]$violations.Add($candidatePath + ' (staged content) - ' + (Get-ClassLabel $class))
                         }
                         elseif ($class -eq 'oversized') {
-                            [void]$unknownNotes.Add($candidatePath + ' staged >UTF8_MAX_FILE_KB, encoding UNKNOWN.')
+                            [void]$unknownNotes.Add($candidatePath + ' staged >UTF8_MAX_FILE_KB.')
                         }
                     }
                 }
@@ -611,15 +611,15 @@ else {
             # blocking a possibly-legacy file would be a false positive, so it
             # is reported as unknown instead.
             if ($script:ViolationClasses -contains $entry.c) {
-                [void]$unknownNotes.Add($entry.p + ' - ' + (Get-ClassLabel $entry.c) + '; baseline PARTIAL, ownership UNPROVEN.')
+                [void]$unknownNotes.Add($entry.p + ' - ' + (Get-ClassLabel $entry.c) + '; baseline PARTIAL.')
             }
             continue
         }
         if ($script:ViolationClasses -contains $entry.c) { [void]$violations.Add($entry.p + ' - ' + (Get-ClassLabel $entry.c)) }
-        elseif ($entry.c -eq 'oversized') { [void]$unknownNotes.Add($entry.p + ' >UTF8_MAX_FILE_KB, encoding UNKNOWN.') }
-        elseif ($entry.c -eq 'unreadable') { [void]$unknownNotes.Add($entry.p + ' unreadable, encoding UNKNOWN.') }
+        elseif ($entry.c -eq 'oversized') { [void]$unknownNotes.Add($entry.p + ' >UTF8_MAX_FILE_KB.') }
+        elseif ($entry.c -eq 'unreadable') { [void]$unknownNotes.Add($entry.p + ' unreadable.') }
     }
-    if ($walk.Partial) { [void]$unknownNotes.Add('PARTIAL: ' + $walk.PartialCause + ' before full comparison') }
+    if ($walk.Partial) { [void]$unknownNotes.Add('PARTIAL: ' + $walk.PartialCause) }
 }
 
 # -- persist the block fingerprint (baseline preserved as-is) --
@@ -653,7 +653,7 @@ if ($violations.Count -gt 0) {
     [void]$lines.Add('Task non-UTF8:')
     $shown = 0
     foreach ($violation in $violations.ToArray()) {
-        if ($shown -ge $maxFindings) { [void]$lines.Add('(+' + ($violations.Count - $shown) + ' more finding(s) omitted)'); break }
+        if ($shown -ge $maxFindings) { [void]$lines.Add('(+' + ($violations.Count - $shown) + ' more)'); break }
         [void]$lines.Add('- ' + $violation)
         $shown++
     }
@@ -661,7 +661,7 @@ if ($violations.Count -gt 0) {
         [void]$lines.Add('UNVERIFIED:')
         foreach ($note in $unknownNotes.ToArray()) { [void]$lines.Add('- ' + $note) }
     }
-    [void]$lines.Add('Save UTF-8 or verified scoped exception: ' + $exceptionFileSetting + ' {version:1,exceptions:[{path,encoding,reason,verification}]}; hook never rewrites.')
+    [void]$lines.Add('Save UTF-8 or ' + $exceptionFileSetting + ' {version:1,exceptions:[{path,encoding,reason,verification}]}; hook never rewrites.')
     Write-HookMessage -Lines $lines.ToArray() -Blocking $true
 }
 

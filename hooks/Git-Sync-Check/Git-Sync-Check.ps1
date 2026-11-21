@@ -399,7 +399,7 @@ if ($status.Ok) {
     if ($statusLines.Count -gt 0) {
         # E-08 wording: porcelain covers all three dirty categories - name them
         # so the report reads unambiguously as staged AND unstaged AND untracked.
-        [void]$findings.Add('There are ' + $statusLines.Count + ' uncommitted change(s) in the working tree (staged, unstaged, and/or untracked).')
+        [void]$findings.Add('' + $statusLines.Count + ' uncommitted change(s) (staged/unstaged/untracked).')
     }
 }
 
@@ -429,16 +429,16 @@ if ($upstream.Ok) {
             # E-08 wording: ahead/behind IS a local/remote final-SHA mismatch -
             # say so explicitly for the completion report.
             if ($behind -gt 0) {
-                [void]$findings.Add('Branch ' + $branchName + ' is ' + $behind + ' commit(s) BEHIND ' + $upstreamName + ' (pull needed; local/remote final SHA mismatch).')
+                [void]$findings.Add('' + $branchName + ': ' + $behind + ' commit(s) BEHIND ' + $upstreamName + ' (pull; SHA mismatch).')
             }
             if ($ahead -gt 0) {
-                [void]$findings.Add('Branch ' + $branchName + ' is ' + $ahead + ' commit(s) AHEAD of ' + $upstreamName + ' (push needed; unpushed commits, local/remote final SHA mismatch).')
+                [void]$findings.Add('' + $branchName + ': ' + $ahead + ' commit(s) AHEAD of ' + $upstreamName + ' (push; SHA mismatch).')
             }
         }
     }
 }
 elseif ($branchName -ne '' -and $branchName -ne 'HEAD') {
-    [void]$findings.Add('Branch ' + $branchName + ' has no upstream branch configured (never pushed?).')
+    [void]$findings.Add('' + $branchName + ' has no upstream branch configured.')
 }
 
 if (-not $isStopEvent) {
@@ -512,11 +512,11 @@ if ($haveBaseline) {
 
         if ($wt.Locked) {
             $reasonSuffix = if ($wt.LockReason -ne '') { ' (' + $wt.LockReason + ')' } else { '' }
-            [void]$advisoryExtra.Add('Worktree at ' + $wt.Path + ' is locked' + $reasonSuffix + '.')
+            [void]$advisoryExtra.Add('Worktree ' + $wt.Path + ' locked' + $reasonSuffix + '.')
         }
         if ($wt.Prunable) {
             $reasonSuffix = if ($wt.PrunableReason -ne '') { ' (' + $wt.PrunableReason + ')' } else { '' }
-            [void]$advisoryExtra.Add('Worktree at ' + $wt.Path + ' is prunable' + $reasonSuffix + '.')
+            [void]$advisoryExtra.Add('Worktree ' + $wt.Path + ' prunable' + $reasonSuffix + '.')
         }
 
         if ($inspectedWorktrees -ge $MaxWorktreesToInspect -or $scanTimer.Elapsed.TotalSeconds -ge $MaxScanSeconds) {
@@ -540,12 +540,12 @@ if ($haveBaseline) {
                 # UNKNOWN on either side (status failed at capture or now, or
                 # a baseline written before the fingerprint field existed):
                 # never claim unchanged, and never hard-block on unknown alone.
-                [void]$advisoryExtra.Add('The uncommitted-change state of pre-existing worktree ' + $wt.Path + ' baseline comparison unavailable; dirty-state UNKNOWN, unchanged unproved; no all-clear.')
+                [void]$advisoryExtra.Add('Pre-existing worktree ' + $wt.Path + ' baseline unavailable; dirty-state UNKNOWN; no all-clear.')
                 continue
             }
             if ($currentDirty -eq $baselineDirty) { continue }   # genuinely unchanged (HEAD AND dirty state) -> advisory context only
             $branchLabel = if ($wt.Detached) { 'detached' } else { $wt.Branch }
-            [void]$blockingExtra.Add('Uncommitted changes inside pre-existing worktree ' + $wt.Path + ' (branch: ' + $branchLabel + ') appeared or changed during this task.')
+            [void]$blockingExtra.Add('Pre-existing worktree ' + $wt.Path + ' (' + $branchLabel + ') dirty state changed during this task.')
             [void]$fingerprintExtra.Add('wt-dirty:' + $normPath.ToLowerInvariant() + '=' + $currentDirty)
             continue
         }
@@ -557,7 +557,7 @@ if ($haveBaseline) {
             if ($dirtyCount -gt 0) {
                 $label = if ($isNew) { 'created' } else { 'changed' }
                 $branchLabel = if ($wt.Detached) { 'detached' } else { $wt.Branch }
-                [void]$blockingExtra.Add('Task-' + $label + ' worktree at ' + $wt.Path + ' (branch: ' + $branchLabel + ') has ' + $dirtyCount + ' uncommitted change(s).')
+                [void]$blockingExtra.Add('Task-' + $label + ' worktree ' + $wt.Path + ' (' + $branchLabel + '): ' + $dirtyCount + ' uncommitted change(s).')
             }
         }
     }
@@ -592,7 +592,7 @@ if ($haveBaseline) {
         if ($mb.ExitCode -ne 1) { continue }   # unknown/error (e.g. unrelated history) -> never block on unproven state
 
         $label = if ($isNew) { 'created' } else { 'advanced' }
-        [void]$blockingExtra.Add('Task-' + $label + ' branch ' + $b.Name + ' has commits not reconciled into ' + $destinationBranch + ' and is not fully pushed to an upstream (local-only work at risk of being lost).')
+        [void]$blockingExtra.Add('Task-' + $label + ' branch ' + $b.Name + ': commits not reconciled into ' + $destinationBranch + ', not fully pushed.')
     }
 
     if ($scanIncomplete) {
@@ -681,7 +681,7 @@ if ($blockingFindings.Count -eq 0) {
 $operationalInstruction = "`n`nBEFORE sync: global-repository-rules.md FULL. Preserve unrelated work; blocked: retain/report."
 if ($blockingExtra.Count -gt 0) {
     $destinationWording = if ($destinationBranch -ne '') { $destinationBranch } else { 'the intended destination branch' }
-    $operationalInstruction += "`n`nReconcile ALL task branches/worktrees into " + $destinationWording + " if intended; push shareable work. Pushed-unmerged!=blocker. Worktree removal: finished/clean/reconciled ONLY; unsafe retain/report."
+    $operationalInstruction += "`n`nReconcile branches/worktrees into " + $destinationWording + "; push shareable (pushed-unmerged!=blocker). Remove worktrees if clean/reconciled."
 }
 $operationalInstruction += "`n`n" + (Get-BranchDispositionInstruction -Disposition (Get-BranchDisposition -RepoPath $cwd -Fallback $destinationBranch -FetchOk ([bool]$fetch.Ok)))
 $operationalInstruction += "`n" + (Get-OpenPullRequestLine -RepoPath $cwd)

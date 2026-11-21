@@ -11,7 +11,7 @@ if ($config.ContainsKey('TEST_COMPLETION_EVIDENCE_MINUTES')) {
         $evidenceMinutes = $parsed
     }
     elseif (-not [string]::IsNullOrWhiteSpace($raw)) {
-        [void]$configWarnings.Add('TEST_COMPLETION_EVIDENCE_MINUTES: integer1..10080 required; default180.')
+        [void]$configWarnings.Add('TEST_COMPLETION_EVIDENCE_MINUTES: 1..10080 (def 180).')
     }
 }
 
@@ -24,7 +24,7 @@ if ($config.ContainsKey('TEST_COMPLETION_ADVISORY_ONLY')) {
     if ($raw -eq '1') { $advisoryOnly = $true }
     elseif ($raw -ne '0' -and -not [string]::IsNullOrWhiteSpace($raw)) {
         $advisoryOnly = $true
-        [void]$configWarnings.Add('TEST_COMPLETION_ADVISORY_ONLY: 0/1 required; invalid -> advisory(1), never wider blocking.')
+        [void]$configWarnings.Add('TEST_COMPLETION_ADVISORY_ONLY: 0/1 (bad->1).')
     }
 }
 
@@ -33,7 +33,7 @@ if ($config.ContainsKey('TEST_COMPLETION_ALWAYS_REQUIRE_NOTE')) {
     $raw = [string]$config['TEST_COMPLETION_ALWAYS_REQUIRE_NOTE']
     if ($raw -eq '1') { $alwaysRequireNote = $true }
     elseif ($raw -ne '0' -and -not [string]::IsNullOrWhiteSpace($raw)) {
-        [void]$configWarnings.Add('TEST_COMPLETION_ALWAYS_REQUIRE_NOTE: 0/1 required; default0, incident-only note.')
+        [void]$configWarnings.Add('TEST_COMPLETION_ALWAYS_REQUIRE_NOTE: 0/1 (def 0).')
     }
 }
 
@@ -60,7 +60,7 @@ if ($config.ContainsKey('TEST_COMPLETION_COORDINATION_WAIT_SECONDS')) {
         $coordinationWaitSeconds = $parsed
     }
     elseif (-not [string]::IsNullOrWhiteSpace($raw)) {
-        [void]$configWarnings.Add('TEST_COMPLETION_COORDINATION_WAIT_SECONDS: integer0..30 required; default2.')
+        [void]$configWarnings.Add('TEST_COMPLETION_COORDINATION_WAIT_SECONDS: 0..30 (def 2).')
     }
 }
 

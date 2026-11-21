@@ -65,15 +65,15 @@ if ($eventName -eq 'Stop') {
         $classFinding = if (Get-Command Get-SpecKitClassFinding -ErrorAction SilentlyContinue) { Get-SpecKitClassFinding -HookInput $hookInput -Events @($evidence.Events) -Cwd $cwd } else { $null }
         if ($null -ne $classFinding -and $classFinding.Kind -eq 'order') {
             if (Test-NewGateFingerprint -Name 'SpeckitOrder' -Cwd $cwd -Fingerprint $classFinding.Fingerprint) {
-                $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Speckit-Check' -FindingFingerprint $classFinding.Fingerprint -EventName $eventName -Message ('SPECKIT CHECK: ' + $classFinding.Detail + ' edited before speckit-implement in CHAIN; edits start in speckit-implement.') -Condition 'advisory'
+                $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Speckit-Check' -FindingFingerprint $classFinding.Fingerprint -EventName $eventName -Message ('SPECKIT CHECK: ' + $classFinding.Detail + ' edited before speckit-implement; start edits there.') -Condition 'advisory'
                 exit $emit.ExitCode
             }
         }
         elseif ($null -ne $classFinding -and (Test-NewGateFingerprint -Name 'SpeckitClass' -Cwd $cwd -Fingerprint $classFinding.Fingerprint)) {
             $classMessage = switch ($classFinding.Kind) {
-                'missing' { 'SPECKIT CHECK: this turn edited ' + [string]$classFinding.EditCount + ' project file(s) and the closing has no Spec Kit line. Add "Spec Kit: CHAIN (<route>)" or "Spec Kit: EXEMPT (question | review | small)".' }
-                'exempt' { 'SPECKIT CHECK: "Spec Kit: EXEMPT" but ' + $classFinding.Detail + '. Reclassify as CHAIN and run the chain, or correct the line.' }
-                default { 'SPECKIT CHECK: "Spec Kit: CHAIN" but no speckit-* step or specs/ write is in the transcript. Run the chain or correct the line.' }
+                'missing' { 'SPECKIT CHECK: ' + [string]$classFinding.EditCount + ' edited file(s), no Spec Kit line. Add "Spec Kit: CHAIN (<route>)" or "Spec Kit: EXEMPT (question | review | small)".' }
+                'exempt' { 'SPECKIT CHECK: EXEMPT contradicted (' + $classFinding.Detail + '). Reclassify as CHAIN and run chain, or fix line.' }
+                default { 'SPECKIT CHECK: CHAIN has no speckit-* step or specs/ write. Run chain or fix line.' }
             }
             $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Speckit-Check' -FindingFingerprint $classFinding.Fingerprint -EventName $eventName -Message $classMessage -Condition 'required-workflow'
             exit $emit.ExitCode
@@ -113,8 +113,8 @@ if ($eventName -eq 'Stop') {
         $firstPrompt = ([string]$changePrompts[0]) -replace '\s+', ' '
         if ($firstPrompt.Length -gt 120) { $firstPrompt = $firstPrompt.Substring(0, 120) + '...' }
         $blockMessage = @(
-            ('SPECKIT CHECK: request "' + $firstPrompt + '" edited ' + [string]$edited.Count + ' files; no speckit-* step or specs/ write in the complete transcript.'),
-            'Run the Spec Kit chain (global-spec-kit-rules.md FULL) or state why this work is exempt.'
+            ('SPECKIT CHECK: request "' + $firstPrompt + '" edited ' + [string]$edited.Count + ' files; no speckit-* step or specs/ write in transcript.'),
+            'Run the Spec Kit chain (global-spec-kit-rules.md FULL) or state the exemption.'
         ) -join "`n"
         $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Speckit-Check' -FindingFingerprint $fingerprint -EventName $eventName -Message $blockMessage -Condition 'required-workflow'
         exit $emit.ExitCode
@@ -209,7 +209,7 @@ $featureLabel = 'Newest feature here (navigation only, no active-feature pointer
 if ($featureFromPointer) { $featureLabel = 'Active feature (.specify/feature.json)' }
 $lead = ''
 if (-not $specsReadable) {
-    $lead = '- Specs unreadable: route UNKNOWN; inspect, do not assume no plan.'
+    $lead = '- Specs unreadable: route UNKNOWN; inspect.'
 }
 elseif (-not $hasInfrastructure) {
     $lead = '- No .specify/: speckit-init -> speckit-constitution.'
@@ -219,17 +219,17 @@ elseif ($newestFeature -eq '') {
     if (-not $hasConstitution) { $lead += ' Missing constitution: speckit-constitution FIRST.' }
 }
 elseif ($openTasks -lt 0) {
-    $lead = '- ' + $featureLabel + ': specs/' + $newestFeature + ' tasks.md unreadable; completion UNKNOWN -> speckit-converge.'
+    $lead = '- ' + $featureLabel + ': specs/' + $newestFeature + ' tasks.md unreadable -> speckit-converge.'
 }
 elseif ($openTasks -gt 0) {
     $lead = '- ' + $featureLabel + ': specs/' + $newestFeature + ' - its tasks.md still has ' + [string]$openTasks + ' unchecked -> speckit-implement; NEW requests: intake first.'
 }
 else {
-    $lead = '- ' + $featureLabel + ': specs/' + $newestFeature + ' tasks checked. New work: new feature; resume/completion doubt: speckit-converge.'
+    $lead = '- ' + $featureLabel + ': specs/' + $newestFeature + ' tasks checked. New work: new feature; doubt: speckit-converge.'
 }
 
 # Keep the detected feature/init route; a generic workflow cannot replace project evidence.
-$note = $lead + "`n" + 'Speckit-Check: advisory, behavior: specify -> clarify -> plan -> tasks -> analyze -> implement; unchanged-intent bug: diagnose -> converge -> implement. Delta: dated IDs/AC, amend spec/plan/tasks, refresh gates before dependents. Follow preflight/scripts/gates; ask unknowns. Newest folder != owner; other-project needs consent/handoff. global-spec-kit-rules.md/global-project-lifecycle-rules.md FULL; read-only/typo exempt.'
+$note = $lead + "`n" + 'Speckit-Check: advisory; behavior: specify->clarify->plan->tasks->analyze->implement; bug: diagnose->converge->implement. Delta: IDs/AC, amend artifacts, refresh gates. Follow scripts/gates; ask unknowns. Newest!=owner; other-project needs consent. global-spec-kit-rules.md/global-project-lifecycle-rules.md FULL; read-only/typo exempt.'
 
 # One message per (session, project, state, text, REQUEST). Initialising the
 # project mid-session CHANGES the state, so the follow-up route is not
@@ -293,7 +293,7 @@ if ($hasInfrastructure) {
             try { $refreshSaid = (([System.IO.File]::ReadAllText($refreshStatePath).Trim()) -eq $refreshKey) } catch { }
         }
         if (-not $refreshSaid) {
-            $refreshLine = 'Refresh: `specify integration status` -> `specify integration upgrade <key>` EACH installed -> `specify extension update`; date .ai/COMMANDS.md.'
+            $refreshLine = 'Refresh: `specify integration status` -> `specify integration upgrade <key>` EACH -> `specify extension update`; date .ai/COMMANDS.md.'
             try {
                 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
                 [System.IO.File]::WriteAllText($refreshStatePath, $refreshKey)

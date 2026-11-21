@@ -131,7 +131,7 @@ function Assert-PersistedDispositions {
     foreach($id in @($script:historicalDispositions.Keys)){
         $matchingEntries=@($Entries|Where-Object{[string](Get-Field $_.Doc 'runId')-ceq$id})
         if($matchingEntries.Count-ne1-or-not(Test-HistoricalDisposition $matchingEntries[0].Doc $matchingEntries[0].Path)){
-            Write-Finding -Blocking $true -Lines @('historical disposition no longer validates for runId='+$id+'. Failure unresolved; verify receipt/resources/repository identity. No current success.')
+            Write-Finding -Blocking $true -Lines @('historical disposition no longer validates for runId='+$id+'. Failure unresolved; verify receipt/resources/repo identity.')
         }
     }
 }

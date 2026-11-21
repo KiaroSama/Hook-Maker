@@ -70,9 +70,9 @@ function Get-SurvivorPatterns {
     if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
     $patterns = @(@($raw -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
     if ($patterns.Count -gt $script:SurvivorMaxPatterns) {
-        [void]$script:configWarnings.Add('TEST_COMPLETION_SURVIVOR_PATTERNS lists ' + $patterns.Count +
-            ' patterns, over the ' + $script:SurvivorMaxPatterns + ' cap; only the first ' +
-            $script:SurvivorMaxPatterns + ' are used.')
+        [void]$script:configWarnings.Add('TEST_COMPLETION_SURVIVOR_PATTERNS has ' + $patterns.Count +
+            ' patterns (max ' + $script:SurvivorMaxPatterns + '); using first ' +
+            $script:SurvivorMaxPatterns + '.')
         $patterns = @($patterns[0..($script:SurvivorMaxPatterns - 1)])
     }
     return $patterns
@@ -254,7 +254,7 @@ function Write-SurvivorAdvisory {
     $stopActive = Get-Field $hookInput 'stop_hook_active'
     if ($null -ne $stopActive -and [bool]$stopActive) { return }
     # The otherwise-silent tail still owes the ledger-write failure (once, never a block).
-    if ($script:LedgerWriteFailed -ne '') { Write-Finding -Blocking $false -Lines @('ledger write failed; otherwise clear, advisory.') }
+    if ($script:LedgerWriteFailed -ne '') { Write-Finding -Blocking $false -Lines @('ledger write failed; advisory.') }
     $patterns = @(Get-SurvivorPatterns)
     if ($patterns.Count -eq 0) { return }
     $since = Get-SessionBaselineUtc
@@ -264,8 +264,8 @@ function Write-SurvivorAdvisory {
     if (-not $snapshot.Ok) {
         if (-not (Test-SurvivorShouldReport 'enumeration-unavailable')) { return }
         Write-Finding -Blocking $false -Lines @(
-            'process query refused/timeout; orphan coverage PARTIAL.',
-            'FULL global-test-rules.md No Orphaned Test Processes: sweep owned PIDs/reap/verify exit/report.')
+            'process query failed; PARTIAL.',
+            'global-test-rules.md No Orphaned Test Processes: sweep/reap.')
         return
     }
     $rows = @($snapshot.Rows)
@@ -289,7 +289,7 @@ function Write-SurvivorAdvisory {
             $script:SurvivorMaxRows + '; shown coverage PARTIAL.')
     }
     if ($snapshot.ForeignRunner -gt 0) {
-        [void]$lines.Add('  (' + $snapshot.ForeignRunner + ' omitted foreign CI runner process(es); NOT task-owned, never terminate.)')
+        [void]$lines.Add('  (' + $snapshot.ForeignRunner + ' foreign CI runner(s) omitted; never terminate.)')
     }
     [void]$lines.Add('global-test-rules.md FULL: PID+start sweep/reap/verify/report; owned alive=incomplete.')
     Write-Finding -Blocking $false -Lines $lines.ToArray()

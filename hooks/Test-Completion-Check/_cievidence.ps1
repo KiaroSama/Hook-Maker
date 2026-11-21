@@ -40,31 +40,31 @@ function Test-CiClearedFailure {
         [Parameter(Mandatory = $true)][AllowNull()][object]$FailureEndedUtc
     )
 
-    if ($null -eq $FailureEndedUtc) { return (New-CiRefusal 'the failure records no end time') }
+    if ($null -eq $FailureEndedUtc) { return (New-CiRefusal 'no failure end time') }
     $failureEnd = ([DateTime]$FailureEndedUtc).ToUniversalTime()
 
     $repo = Get-GitHubRepository -ProjectRoot $ProjectRoot
     if ($null -eq $repo -or [string]::IsNullOrWhiteSpace([string]$repo.Repository)) {
-        return (New-CiRefusal 'this project has no resolvable GitHub remote')
+        return (New-CiRefusal 'no GitHub remote')
     }
 
     $head = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'rev-parse', 'HEAD'))
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($head)) { return (New-CiRefusal 'HEAD cannot be resolved') }
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($head)) { return (New-CiRefusal 'HEAD unknown') }
     $head = $head.Trim()
 
     # A CI result describes COMMITTED code. An uncommitted edit is invisible to
     # it, so a dirty tree is not the tree the run passed on.
     $dirty = @((Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'status', '--porcelain')) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-    if ($LASTEXITCODE -ne 0) { return (New-CiRefusal 'the working tree state cannot be read') }
-    if ($dirty.Count -gt 0) { return (New-CiRefusal 'uncommitted changes: CI cannot describe this tree') }
+    if ($LASTEXITCODE -ne 0) { return (New-CiRefusal 'working tree unreadable') }
+    if ($dirty.Count -gt 0) { return (New-CiRefusal 'dirty tree: CI cannot verify') }
 
     $path = Get-CiEvidencePath -ProjectRoot $ProjectRoot -RepoSlug ([string]$repo.Repository)
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return (New-CiRefusal 'project CI observation absent') }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return (New-CiRefusal 'no CI observation') }
     $lines = @()
-    try { $lines = @([System.IO.File]::ReadAllLines($path, [Text.Encoding]::UTF8)) } catch { return (New-CiRefusal 'the CI observation cannot be read') }
+    try { $lines = @([System.IO.File]::ReadAllLines($path, [Text.Encoding]::UTF8)) } catch { return (New-CiRefusal 'CI observation unreadable') }
 
     $proof = Read-CiProvenance -Lines $lines -Repository ([string]$repo.Repository) -Sha $head -FailureEndedUtc $failureEnd
-    if ($null -eq $proof) { return (New-CiRefusal 'CI provenance absent/stale/mismatched or execution predates failure') }
+    if ($null -eq $proof) { return (New-CiRefusal 'CI provenance missing/stale/mismatched or predates failure') }
 
-    return [pscustomobject]@{ Cleared = $true; Sha = $head; Reason = 'CI is green for this exact commit' }
+    return [pscustomobject]@{ Cleared = $true; Sha = $head; Reason = 'CI green for commit' }
 }

@@ -125,7 +125,7 @@ $projectKey = Get-ShortHash $cwd.ToLowerInvariant()
 # name list contradicting the "none" it had just written. Both halves passed
 # their own tests; what was missing was that they agreed.
 $script:SkillsRequiredLine = 'Skills used: <names> OR Skills used: none - <EACH unused name/reason>'
-$script:SkillsRequirement = 'Final "Skills used: <exact keys/outcomes>" or "Skills used: none - <EACH unused match/reason>"; read/presence/library/trivial!=use; configured!=exposed.'
+$script:SkillsRequirement = 'Final "Skills used: <keys>" or "Skills used: none - <EACH unused match/reason>"; read/presence/library/trivial!=use; configured!=exposed.'
 # The import safety boundary, stated wherever an import is suggested. Copying a
 # skill is an AUTHORIZED operation under the Skill Policy and this hook never
 # performs one - so every place that names a copy command also names its rules.
@@ -136,7 +136,7 @@ $script:SpecKitRouting = 'BEFORE scaffold/feature/bug/delta: global-spec-kit-rul
 # Order 55 step 4a, verbatim. Routing is per SKILL, because an agent sees
 # skills, not plugins; and security work has one entry point.
 $script:SkillRoutingLines = @(
-    '- Skill job/default: global-skill-routing.md FULL; user/Desktop/Kiaro contracts: global-skills-catalogue.md, not plugin labels.',
+    '- Jobs/defaults: global-skill-routing.md FULL; user/Desktop/Kiaro: global-skills-catalogue.md (not plugin labels).',
     '- BEFORE selection/security: global-skill-routing.md/global-skills-catalogue.md FULL.'
 )
 $script:ImportGuidance = 'BEFORE copy: skill policy FULL; 1-5 authorized folders, preserve modified; record .ai/SKILLS.md.'
@@ -533,12 +533,12 @@ if ($eventName -eq 'UserPromptSubmit') {
         $dd = New-Object System.Collections.Generic.List[string]
         [void]$dd.Add('SKILL POLICY CHECK (' + $client + '): ::deep-debug; exact loadable SKILL.md key/exposure, no mutation.')
         [void]$dd.Add('- EVERY bug/phase: WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md FULL.')
-        [void]$dd.Add('- Ledger bugs/phases first; ::multi-agent codeword. dispatching-parallel-agents: independent discovery; subagent-driven-development: prepared tasks. Flatten/dedup/cycle-check once, no nested/recursive agents.')
-        [void]$dd.Add('- audit-context-building: substantial/unfamiliar/architecture/security; Graphify policy. brainstorming: real design ambiguity; writing-plans: complex repair lacking plan.')
-        [void]$dd.Add('- Bug: systematic-debugging/test-driven-development/verification-before-completion; runtime question: local DAP/debugger OR trusted debug-live DebugMCP/VS Code.')
-        [void]$dd.Add('- Real plan: executing-plans, test-driven-development, requesting-code-review, verification-before-completion.')
-        [void]$dd.Add('- Security subset by job: differential-review/insecure-defaults/review/verification; semgrep/codeql, SARIF parser if output exists; fp-check before confirmation, variant-analysis after proven cause, supply-chain auditor for deps, c-review C/C++, rust-review Rust. static-analysis is label unless exact installed name:. Active testing needs ownership/consent/scope.')
-        [void]$dd.Add('- property-based-testing: real round-trip/validator/state/path/idempotency/boundary invariant only, never usage padding.')
+        [void]$dd.Add('- Ledger bugs/phases first; ::multi-agent: dispatching-parallel-agents, subagent-driven-development. Dedupe/acyclic, no nesting.')
+        [void]$dd.Add('- audit-context-building: large/unfamiliar/security (Graphify); brainstorming: ambiguity; writing-plans: complex repair.')
+        [void]$dd.Add('- Bug: systematic-debugging/test-driven-development/verification-before-completion; runtime: DAP/debug-live.')
+        [void]$dd.Add('- Plan: executing-plans, test-driven-development, requesting-code-review, verification-before-completion.')
+        [void]$dd.Add('- Security: differential-review/insecure-defaults/review/verification, semgrep/codeql, SARIF parser, fp-check, variant-analysis, supply-chain auditor, c-review, rust-review. Active needs ownership/consent/scope.')
+        [void]$dd.Add('- property-based-testing: real round-trip/state/boundary invariant only, never usage padding.')
         [void]$dd.Add('- ' + $ponytailRef + ' ONCE; then safe cuts/targeted tests/final proof only.')
         if ($notVisible.Count -gt 0) {
             [void]$dd.Add('- NOT VISIBLE (project/global/plugin): ' + ($notVisible.ToArray() -join ', ') + '. Verify elsewhere; required gap=BLOCKED/PARTIAL.')
@@ -580,9 +580,9 @@ if ($eventName -eq 'UserPromptSubmit') {
     # Partial discovery retains known matches and exposes uncertainty, never a completeness claim.
     if ($index.Partial.Count -gt 0) { [void]$lines.Add('Skill discovery was PARTIAL: ' + (($index.Partial | Select-Object -Unique -First 6) -join '; ')) }
     if ($pluginOverrideAdvisory -ne '') { [void]$lines.Add($pluginOverrideAdvisory) }
-    [void]$lines.Add('SKILL POLICY CHECK (' + $client + '): advisory skill routing at task/job change; covered steps through exact skill. Matched authorized library copy -> project/.ai/SKILLS.md; feature: grilling/domain-modeling then Spec Kit. Sources: project/global/plugin/library.')
+    [void]$lines.Add('SKILL POLICY CHECK (' + $client + '): advisory; library copy->project/.ai/SKILLS.md; feature: grilling/domain-modeling then Spec Kit. Sources: project/global/plugin/library.')
     if ($topInstalled.Count -gt 0) {
-        [void]$lines.Add('INSTALLED matches only: verify source/exposure/exact SKILL.md key:')
+        [void]$lines.Add('INSTALLED matches: verify source/exposure/SKILL.md key:')
         foreach ($m in $topInstalled) {
             $where = ''
             if ($null -ne $m.PSObject.Properties['Path'] -and -not [string]::IsNullOrWhiteSpace([string]$m.Path)) { $where = ' -> ' + (Join-Path $m.Path 'SKILL.md') }
@@ -592,16 +592,16 @@ if ($eventName -eq 'UserPromptSubmit') {
         }
     }
     if ($topLibrary.Count -gt 0) {
-        [void]$lines.Add('Library!=installed; BEFORE copy ' + $policyFile + ' FULL; record date. Hook never copies.')
+        [void]$lines.Add('Library!=installed; BEFORE copy ' + $policyFile + ' FULL. Hook never copies.')
         [void]$lines.Add('Project destination: ' + $projectSkillsDir)
         foreach ($m in $topLibrary) {
-            [void]$lines.Add('- ' + $m.Name + '   ->   Copy-Item -LiteralPath "' + $m.Path + '" -Destination "' + $projectSkillsDir + '" -Recurse -Force')
+            [void]$lines.Add('- ' + $m.Name + ' -> Copy-Item -LiteralPath "' + $m.Path + '" -Destination "' + $projectSkillsDir + '" -Recurse -Force')
         }
-        [void]$lines.Add('(If absent: New-Item -ItemType Directory -Path "' + $projectSkillsDir + '" -Force; invoke copied SKILL.md name:.)')
+        [void]$lines.Add('(Mkdir if absent: "' + $projectSkillsDir + '"; invoke SKILL.md name:.)')
         [void]$lines.Add($script:ImportGuidance)
     }
     if ($topInstalled.Count -eq 0 -and $topLibrary.Count -eq 0) {
-        [void]$lines.Add('Four sources: no name match != irrelevant; inspect specialists.')
+        [void]$lines.Add('Four sources: no name match != irrelevant.')
         if ($hasLibrary) { [void]$lines.Add('Library: ' + $libraryDir) }
     }
     foreach ($routingLine in $script:SkillRoutingLines) { [void]$lines.Add($routingLine) }
@@ -613,14 +613,14 @@ if ($eventName -eq 'UserPromptSubmit') {
 
 # ---- SessionStart: compact routed inventory of all three installed sources --
 $lines = New-Object System.Collections.Generic.List[string]
-[void]$lines.Add('SKILL POLICY CHECK (' + $client + '): advisory task/job skill check; use relevant installed exact keys, installation/copy/update/removal only under policy consent.')
+[void]$lines.Add('SKILL POLICY CHECK (' + $client + '): advisory; use installed keys; changes by policy consent.')
 if ($skillLines.Count -gt 0) {
-    [void]$lines.Add('Project + global skills (deduped by name:):')
+    [void]$lines.Add('Project + global (by name:):')
     foreach ($sl in $skillLines) { [void]$lines.Add($sl) }
     foreach ($cl in $conflictLines) { [void]$lines.Add($cl) }
 }
 else {
-    [void]$lines.Add('Project skills (' + $projectSkillsDir + '): none installed.')
+    [void]$lines.Add('Project (' + $projectSkillsDir + '): none.')
 }
 if ($index.Plugin.Count -gt 0) {
     # Named by plugin, not by skill: several hundred skill names would be a token
@@ -645,19 +645,19 @@ elseif ($hasPluginRoot) {
 # Partial discovery retains known matches and exposes uncertainty, never a completeness claim.
     if ($index.Partial.Count -gt 0) { [void]$lines.Add('Skill discovery was PARTIAL: ' + (($index.Partial | Select-Object -Unique -First 6) -join '; ')) }
     if ($pluginOverrideAdvisory -ne '') { [void]$lines.Add($pluginOverrideAdvisory) }
-[void]$lines.Add('- Exact SKILL.md name:, not folder/plugin/market/category.')
+[void]$lines.Add('- Exact SKILL.md name:, not folder.')
 if ($hasRecord) {
-    [void]$lines.Add('- Skill changes: read/update .ai/SKILLS.md; local, secret-free.')
+    [void]$lines.Add('- Changes: .ai/SKILLS.md; local, secret-free.')
 }
 if ($hasLibrary) {
-    [void]$lines.Add('- Library: ' + $libraryDir + ' (' + $index.Library.Count + '); exact prompt imports -> ' + $projectSkillsDir + '. Policy consent only.')
+    [void]$lines.Add('- Library: ' + $libraryDir + ' (' + $index.Library.Count + ') -> ' + $projectSkillsDir + '.')
     [void]$lines.Add('- ' + $script:ImportGuidance)
 }
-[void]$lines.Add('- Select only the minimal relevant set (1-5). Follows ' + $policyFile + '.')
+[void]$lines.Add('- Minimal set (1-5). Policy: ' + $policyFile + '.')
 foreach ($routingLine in $script:SkillRoutingLines) { [void]$lines.Add($routingLine) }
 
 # Agents are a separate selection surface; skill discovery cannot prove coverage.
-[void]$lines.Add('Agents: BEFORE selection global-agent-rules.md FULL; global/project ' + $(if ($client -eq 'claude') { '.claude/agents' } else { 'native agents' }) + '; installed_plugins.json declared/default roots. Gaps UNVERIFIED; no auto spawn.')
+[void]$lines.Add('Agents: global-agent-rules.md FULL; ' + $(if ($client -eq 'claude') { '.claude/agents' } else { 'native agents' }) + '; installed_plugins.json roots. Gaps UNVERIFIED.')
 # Provider/source-aware drift is advisory, never runtime load evidence.
 # Project-local copies remain outside the global catalogue contract.
 $driftNames = @(@($index.Plugin | Where-Object { $_.Status -eq 'enabled' } | ForEach-Object { $_.Name }) +

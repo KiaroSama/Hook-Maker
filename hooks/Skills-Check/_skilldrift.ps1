@@ -138,11 +138,11 @@ function Get-SkillDriftLines {
     if ($null -ne $Drift.PSObject.Properties['Partial'] -and $Drift.Partial.Count -gt 0) { [void]$lines.Add('Catalogue identity coverage PARTIAL (not an all-clear): ' + ($Drift.Partial -join '; ')) }
     if ($Drift.Missing.Count -gt 0) {
         $shown = @($Drift.Missing | Select-Object -First $script:DriftReportLimit)
-        $more = if ($Drift.Missing.Count -gt $shown.Count) { ' (+' + ($Drift.Missing.Count - $shown.Count) + ' more)' } else { '' }
-        [void]$lines.Add('UNCATALOGUED SKILLS (advisory): ' + ($shown -join ', ') + $more + ' - provider/source contract missing; mentions/other providers != coverage. Update rules.')
+        $more = if ($Drift.Missing.Count -gt $shown.Count) { ' (+' + ($Drift.Missing.Count - $shown.Count) + ')' } else { '' }
+        [void]$lines.Add('UNCATALOGUED SKILLS (advisory): ' + ($shown -join ', ') + $more + ' - contract missing; update rules.')
     }
     if ($Drift.Removed.Count -gt 0) {
-        [void]$lines.Add('REMOVED PLUGINS (advisory): ' + ((@($Drift.Removed | Select-Object -First $script:DriftReportLimit)) -join ', ') + ' - removed plugin still catalogued; update rules.')
+        [void]$lines.Add('REMOVED PLUGINS (advisory): ' + ((@($Drift.Removed | Select-Object -First $script:DriftReportLimit)) -join ', ') + ' - update rules.')
     }
     return $lines
 }

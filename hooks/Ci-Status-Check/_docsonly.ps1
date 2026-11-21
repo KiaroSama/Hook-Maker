@@ -163,7 +163,7 @@ function Invoke-DocsOnlyCarryover {
     if ($null -eq $carry) { return }
     # Restored ancestor evidence is not final-status proof; advise without publishing a final-SHA receipt.
     if ($RequireLatestStatus) {
-        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $EventName -Reason ('ancestor-tested=' + $carry.Parent + '; final SHA=' + $Sha + ' UNTESTED. Latest-status required: final-SHA manual batch or exact blocker; no copied green.')
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $EventName -Reason ('ancestor-tested=' + $carry.Parent + '; final SHA=' + $Sha + ' UNTESTED. Latest-status required: manual batch or blocker; no copied green.')
         exit $emit.ExitCode
     }
     $when = [DateTimeOffset]::UtcNow.ToString('o')
@@ -179,7 +179,7 @@ function Invoke-DocsOnlyCarryover {
     }
     $shown = @($carry.Files | Select-Object -First 5)
     $more = if ($carry.Files.Count -gt $shown.Count) { ', ...' } else { '' }
-    exit (Write-HookResult -EventName $EventName -Kind 'advisory' -Message ('tests verified green on ' + $carry.Parent +
-        '; ' + $Sha.Substring(0, [Math]::Min(7, $Sha.Length)) + ' changes documentation only (' + $carry.Files.Count + ' file(s): ' + ($shown -join ', ') + $more +
-        ') + skip marker; no run. Parent passed, current commit not green.')).ExitCode
+    exit (Write-HookResult -EventName $EventName -Kind 'advisory' -Message ('tests green on ' + $carry.Parent +
+        '; ' + $Sha.Substring(0, [Math]::Min(7, $Sha.Length)) + ' docs-only (' + $carry.Files.Count + ': ' + ($shown -join ', ') + $more +
+        ') + skip marker; current commit not green.')).ExitCode
 }

@@ -272,8 +272,7 @@ function Get-SkillClosingDecision {
                     # its own: this message lands in the same transcript the next
                     # Stop reads, and an example at the start of a line would
                     # satisfy the detector - the hook would clear its own block.
-                    'Final standalone "Skills used: <exact invoked/applied keys>"; presence/read != execution.',
-                    'Final standalone "Skills used: <exact invoked/applied names>"; read-only != used.'
+                    'Final standalone "Skills used: <exact invoked/applied names>"; read-only/presence != used.'
                 ) -join "`n")
         }
     }
@@ -284,7 +283,7 @@ function Get-SkillClosingDecision {
         if (@($unused).Count -gt 0) {
             [void]$lines.Add('INSTALLED prompt matches unused: ' + $named + '.' + $scale + ' Verify exposure; no auto changes.')
         }
-        [void]$lines.Add('Clear: final "Skills used: <actual names>" or "Skills used: none - <reason>"; no omission.')
+        [void]$lines.Add('Clear: final "Skills used: <names>" or "Skills used: none - <reason>"; no omission.')
         return [pscustomobject]@{ Kind = 'block'; Answered = $answeredNow; Token = ('missing-after-work|' + $named); Text = (($lines.ToArray()) -join "`n") }
     }
 
@@ -297,8 +296,8 @@ function Get-SkillClosingDecision {
         Token = 'none-invoked'
         Text  = (@(
                 'SKILL POLICY CHECK - no skill was invoked this session.',
-                'Specialized debugging/testing/security/UI/stack may have an installed match; verify exact key/exposure before use.',
-                ('Either way the summary must carry the line: ' + $script:SkillsRequiredLine)
+                'Specialized work may have an installed match; verify exact key/exposure before use.',
+                ('Summary line: ' + $script:SkillsRequiredLine)
             ) -join "`n")
     }
 }

@@ -5,22 +5,22 @@ function Read-SkillCatalogueContracts {
     $partial = New-Object 'System.Collections.Generic.List[string]'
     $clock = [Diagnostics.Stopwatch]::StartNew(); $bytes = 0L; $rows = 0
     $files = @(Get-ChildItem -LiteralPath (Join-Path $RulesDir 'catalogue') -Filter 'skills-*.jsonl' -File -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 257)
-    if ($files.Count -gt 256) { [void]$partial.Add('catalogue file ceiling reached') }
+    if ($files.Count -gt 256) { [void]$partial.Add('catalogue file cap') }
     foreach ($file in @($files | Select-Object -First 256)) {
-        if ($file.Length -gt 2097152 -or $bytes + $file.Length -gt 16777216 -or $clock.Elapsed.TotalSeconds -gt 2) { [void]$partial.Add('catalogue byte/time ceiling reached'); break }
+        if ($file.Length -gt 2097152 -or $bytes + $file.Length -gt 16777216 -or $clock.Elapsed.TotalSeconds -gt 2) { [void]$partial.Add('catalogue byte/time cap'); break }
         $bytes += $file.Length
         try {
-            if ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) { [void]$partial.Add('catalogue reparse file skipped'); continue }
+            if ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) { [void]$partial.Add('catalogue reparse skipped'); continue }
             $lines = [IO.File]::ReadAllLines($file.FullName, [Text.UTF8Encoding]::new($false,$true))
             foreach ($line in $lines) {
                 if ([string]::IsNullOrWhiteSpace($line)) { continue }
-                if ($rows -ge 20000 -or $clock.Elapsed.TotalSeconds -gt 2) { [void]$partial.Add('catalogue row/time ceiling reached'); break }
+                if ($rows -ge 20000 -or $clock.Elapsed.TotalSeconds -gt 2) { [void]$partial.Add('catalogue row/time cap'); break }
                 $rows++
                 try {
                     $record = $line | ConvertFrom-Json -ErrorAction Stop
                     $kind = [string](Get-Field $record 'category')
                     if ($kind -ne '' -and $kind -ne 'skill') { continue }
-                    if ([string](Get-Field $record 'name') -eq '' -or $null -eq (Get-Field $record 'sources')) { [void]$partial.Add('catalogue skill identity missing'); continue }
+                    if ([string](Get-Field $record 'name') -eq '' -or $null -eq (Get-Field $record 'sources')) { [void]$partial.Add('catalogue id missing'); continue }
                     [void]$records.Add($record)
                 }
                 catch { [void]$partial.Add('catalogue record unreadable') }

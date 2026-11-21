@@ -200,13 +200,13 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $proj 'graphify-out') -Force | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $proj 'graphify-out\graph.json'), '{}')
     $r = Invoke-CbmHook 'Graph-Read-Check\Graph-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = 'g1' } $cache
-    Check 'graph: still advises when this project has a CBM index' ($r.Exit -eq 0 -and $r.Out -match 'Graph-Read-Check: advisory graphify-out/graph.json; broad architecture/relationships/call/impact/refactor questions: scoped graph first') $r.Out
+    Check 'graph: still advises when this project has a CBM index' ($r.Exit -eq 0 -and $r.Out -match 'Graph-Read-Check: advisory graphify-out/graph.json; broad architecture/call/impact/refactor: scoped graph first') $r.Out
     Check 'graph: the advisory names both graphs' ($r.Out -match 'Both: CMM code/Graphify docs-media-cross-cut') $r.Out
     Remove-Item -LiteralPath $dbPath -Force
     $r = Invoke-CbmHook 'Graph-Read-Check\Graph-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = 'g2' } $cache
-    Check 'graph: unchanged behaviour when there is no CBM index' ($r.Exit -eq 0 -and $r.Out -match 'Graph-Read-Check: advisory graphify-out/graph.json; broad architecture/relationships/call/impact/refactor questions: scoped graph first') $r.Out
+    Check 'graph: unchanged behaviour when there is no CBM index' ($r.Exit -eq 0 -and $r.Out -match 'Graph-Read-Check: advisory graphify-out/graph.json; broad architecture/call/impact/refactor: scoped graph first') $r.Out
     $r = Invoke-CbmHook 'Graph-Read-Check\Graph-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = 'g3' } $emptyCache
-    Check 'graph: unchanged behaviour when CBM is not installed at all' ($r.Exit -eq 0 -and $r.Out -match 'Graph-Read-Check: advisory graphify-out/graph.json; broad architecture/relationships/call/impact/refactor questions: scoped graph first') $r.Out
+    Check 'graph: unchanged behaviour when CBM is not installed at all' ($r.Exit -eq 0 -and $r.Out -match 'Graph-Read-Check: advisory graphify-out/graph.json; broad architecture/call/impact/refactor: scoped graph first') $r.Out
     [System.IO.File]::WriteAllText($dbPath, 'x')
 
     # =====================================================================

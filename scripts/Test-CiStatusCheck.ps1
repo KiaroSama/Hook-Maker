@@ -300,7 +300,7 @@ try {
     $r = Fire -HookPath $CiHook -Cwd $ciSha -EventName 'Stop'
     Check 'E-09: the failure block states the EXACT-final-SHA contract incl. post-Ponytail changes' (
         $r.Out -match '"systemMessage"' -and $r.Out -match 'final pushed SHA' -and
-        $r.Out -match 'post-Ponytail commits too' -and $r.Out -match 'repair/validate/push, verify SHA') $r.Out
+        $r.Out -match 'post-Ponytail commits' -and $r.Out -match 'repair/validate/push, verify SHA') $r.Out
     # The external-blocker exception contract already exists - pin its wording in
     # source rather than rewriting it (E-09): the notice always states CI is NOT
     # verified green and forbids claiming CI passed.

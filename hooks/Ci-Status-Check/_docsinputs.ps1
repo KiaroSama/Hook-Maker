@@ -99,18 +99,18 @@ function Test-DocsHaveSemanticConsumers {
         # Encoding vocabulary alone never proves hygiene: a decoder can pass its
         # result into a semantic assertion through an arbitrary variable name.
         if ($text -match '(?i)(doctest|markdown[-_ ]?doctest|remark-extract|mdx|markdown-loader|md-loader|embed.*\.md|include_str!.*\.md|sphinx|mkdocs|docusaurus|mdbook|long_description|readme\s*=)') {
-            $script:DocsCarryoverReason = 'Semantic doc build/test/package:' + $path
+            $script:DocsCarryoverReason = 'Semantic doc build:' + $path
             return $true
         }
         if ($readers -contains $match) {
-            $script:DocsCarryoverReason = 'UNKNOWN reader scope/hygiene: ' + $path
+            $script:DocsCarryoverReason = 'UNKNOWN reader: ' + $path
             return $true
         }
         foreach ($line in $lines) {
             if ($line -match '(?i)(prettier|markdownlint|format:|format:check)' -and $line -notmatch '(?i)(--plugin|--config)') { continue }
             foreach ($file in $Files) {
                 if (($line.IndexOf($file, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $line.IndexOf([IO.Path]::GetFileName($file), [StringComparison]::OrdinalIgnoreCase) -ge 0)) {
-                    $script:DocsCarryoverReason = 'Semantic doc reference:' + $path
+                    $script:DocsCarryoverReason = 'Semantic doc ref:' + $path
                     return $true
                 }
             }

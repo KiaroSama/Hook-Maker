@@ -43,7 +43,7 @@ function Get-ReleaseMatrixNote {
     param([Parameter(Mandatory = $true)][string]$ProjectRoot)
     $issues = @(Get-ReleaseMatrixFinding -ProjectRoot $ProjectRoot)
     if ($issues.Count -eq 0) { return '' }
-    $note = 'RELEASE MATRIX: default Windows+Linux x64/arm64; no 32-bit/macOS unless asked in that request (global-architecture-rules.md Release build matrix).' + "`n" + ($issues -join "`n")
+    $note = 'RELEASE MATRIX: Windows+Linux x64/arm64; no 32-bit/macOS unless asked (global-architecture-rules.md Release build matrix).' + "`n" + ($issues -join "`n")
     $state = Join-Path $env:LOCALAPPDATA ('HookMaker\state\GithubBaselineCheck-matrix-' + (Get-ShortHash $ProjectRoot.ToLowerInvariant()) + '.txt')
     $fp = Get-ShortHash $note
     try { if ([IO.File]::Exists($state) -and ([IO.File]::ReadAllText($state)).Trim() -eq $fp) { return '' } } catch { }

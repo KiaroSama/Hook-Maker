@@ -211,7 +211,7 @@ try {
     Check 'post-deploy real verification or reviewed no-ship is required' (
         $r.Out -match 'exact-SHA deploy \+ real health/log/route/binding postchecks or reviewed no-ship' -and $r.Out -match 'Missing=UNVERIFIED') $r.Out
     Check 'command success alone is not described as live proof' ($r.Out -match 'Exit0!=live proof') $r.Out
-    Check 'redeploy-on-failure is not blind/repeated' ($r.Out -match 'never blind redeploy') $r.Out
+    Check 'redeploy-on-failure is not blind/repeated' ($r.Out -match 'no blind redeploy') $r.Out
     Check 'the deploy command itself is still suggested' ($r.Out -match 'npx wrangler deploy') $r.Out
 
     # =====================================================================

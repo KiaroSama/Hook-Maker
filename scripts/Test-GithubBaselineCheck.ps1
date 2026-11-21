@@ -231,16 +231,16 @@ try {
     $bd3 = New-GitRepo 'badges3' -GithubRemote:$false
     New-BadgeReadme -Repo $bd3 -Shields 3
     $r = Fire -HookPath $BaselineHook -Cwd $bd3
-    Check 'badges: a 3-badge README gets the below-12 prompt' ($r.Out -match 'Title badges: 3 < 12' -and $r.Out -match 'Advisory, not defect') $r.Out
+    Check 'badges: a 3-badge README gets the below-12 prompt' ($r.Out -match 'Title badges: 3 < 12' -and $r.Out -match 'Advisory') $r.Out
     # Badge priority/donation/truth/privacy/logo detail is indirect in full README owner.
     Check 'badges: complete README owner must be loaded BEFORE editing' (
         $r.Out -match 'BEFORE README: global-repository-rules.md README FULL' -and
         $r.Out -match '12 to 16 verified badges/Donate') $r.Out
     Check 'badges: a missing donation badge and Donate section are each named' (
-        $r.Out -match 'Title lacks Support-donations badge' -and $r.Out -match 'Missing ## Donate/#donate' -and $r.Out -match 'never invent/alter wallets') $r.Out
+        $r.Out -match 'Title lacks Support-donations badge' -and $r.Out -match 'Missing ## Donate/#donate' -and $r.Out -match 'never invent wallets') $r.Out
     Check 'badges: advisory only - never a decision' ($r.Out -notmatch '"decision"') $r.Out
     Check 'badges: rows outside a centred block are named, with the exact wrapper (steering V47)' (
-        $r.Out -match 'Center badge rows: one <div align=\\"center\\">' -and
+        $r.Out -match 'Badges: one <div align=\\"center\\">' -and
         $r.Out -match 'blank lines after opening/before </div>') $r.Out
     $bd14 = New-GitRepo 'badges14' -GithubRemote:$false
     New-BadgeReadme -Repo $bd14 -Shields 14
@@ -251,7 +251,7 @@ try {
     New-BadgeReadme -Repo $bd7 -Shields 10 -WithWorkflowBadge -WithDonate -Centred
     $r = Fire -HookPath $BaselineHook -Cwd $bd7
     Check 'badges: 10 static + workflow + donation = 12, centred, with its Donate section -> guidance only; the plain logo is not counted' (
-        $r.Out -match '12 to 16 verified badges/Donate' -and $r.Out -notmatch 'Title badges: \d+ [<>] \d+' -and $r.Out -notmatch 'Center badge rows' -and
+        $r.Out -match '12 to 16 verified badges/Donate' -and $r.Out -notmatch 'Title badges: \d+ [<>] \d+' -and $r.Out -notmatch 'Badges: one <div' -and
         $r.Out -notmatch 'Title lacks Support-donations badge' -and $r.Out -notmatch 'Missing ## Donate/#donate') $r.Out
     $bd11 = New-GitRepo 'badges11' -GithubRemote:$false
     New-BadgeReadme -Repo $bd11 -Shields 9 -WithWorkflowBadge -WithDonate
@@ -262,7 +262,7 @@ try {
     $r = Fire -HookPath $BaselineHook -Cwd $bd17
     Check 'badges: 17 badges get the above-16 trim prompt, never a block (steering V45)' (
         $r.Out -match 'Title badges: 17 > 16' -and $r.Out -match 'Trim lower-priority facts' -and
-        $r.Out -match 'Advisory, not defect' -and $r.Out -notmatch '"decision"') $r.Out
+        $r.Out -match 'Advisory' -and $r.Out -notmatch '"decision"') $r.Out
     $bd16 = New-GitRepo 'badges16' -GithubRemote:$false
     New-BadgeReadme -Repo $bd16 -Shields 15 -WithDonate
     $r = Fire -HookPath $BaselineHook -Cwd $bd16
@@ -300,7 +300,7 @@ try {
     Check 'missing .github -> CI + dependabot findings' ($r.Out -match 'GITHUB BASELINE CHECK' -and $r.Out -match 'No CI workflow' -and $r.Out -match 'No \.github/dependabot\.yml' -and $r.Out -match 'npm at /' -and $r.Out -match 'BEFORE repair: global-github-automation-rules\.md FULL')
     Check 'CodeQL suggested for detected language' ($r.Out -match 'CodeQL')
     Check 'CodeQL requirement follows actual public/private scope, never local filename' (
-        $r.Out -match 'Public CodeQL/Socket/Semgrep/CodeRabbit' -and $r.Out -match 'private Socket/Semgrep; preserve existing' -and $r.Out -notmatch 'CodeQL optional|Optional CodeQL absent') $r.Out
+        $r.Out -match 'Public CodeQL/Socket/Semgrep/CodeRabbit' -and $r.Out -match 'private Socket/Semgrep; keep existing' -and $r.Out -notmatch 'CodeQL optional|Optional CodeQL absent') $r.Out
     Check 'information-only tasks authorize no unrelated account actions' (
         $r.Out -match 'Info-only: no actions') $r.Out
     Check 'current-task expansion is explicitly prohibited' ($r.Out -match 'Owned dev/closure: standing scope; info-only: no actions') $r.Out
@@ -635,7 +635,7 @@ jobs:
     # A confirmed unsafe workflow is called out as urgent EVEN for an
     # unrelated task, unlike ordinary advisory gaps.
     Check 'a confirmed unsafe workflow is called out as urgent regardless of task relation' (
-        $r.Out -match 'Urgent: pull_request_target \+ untrusted checkout' -and $r.Out -match 'fix confirmed unsafe scope only') $r.Out
+        $r.Out -match 'Urgent: pull_request_target \+ untrusted checkout' -and $r.Out -match 'fix confirmed scope only') $r.Out
 
     # Empty workflow file - must not crash, and correctly counts as "no validation".
     $emptyWf = New-GitRepo 'emptywf'

@@ -57,7 +57,7 @@ function Get-VoiceLanguage {
 
 # ---- SessionStart: the mapping, and a reload duty after compact/resume -------
 if ($eventName -eq 'SessionStart') {
-    $note = 'WRITING VOICE: match OUTPUT language voice skill (incl. comments/docstrings): Persian -> `anthropic-skills:persian`, Russian -> `anthropic-skills:great-russian`, English -> `humanizer:humanizer` (global-writing-voice-rules.md FULL). Load before first sentence; Stop blocks missing load.'
+    $note = 'WRITING VOICE: match OUTPUT language (incl. comments/docstrings): Persian->`anthropic-skills:persian`, Russian->`anthropic-skills:great-russian`, English->`humanizer:humanizer` (global-writing-voice-rules.md FULL). Load first; Stop blocks missing.'
     $source = [string](Get-Field $hookInput 'source')
     if ($source -in @('compact', 'resume')) { $note += ' Session ' + $(if ($source -eq 'compact') { 'compacted' } else { 'resumed' }) + ': reload voice skill now.' }
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
@@ -78,7 +78,7 @@ if ($eventName -eq 'UserPromptSubmit') {
     try { [void][IO.Directory]::CreateDirectory($stateDir); [IO.File]::WriteAllText($seenPath, ($(if ($seen -eq '') { $language } else { $seen.Trim() + ',' + $language }))) }
     catch { exit 0 }    # an unrecordable once-marker must not become a per-prompt note
     $entry = $voiceMap[$language]
-    $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message ('VOICE: reply in ' + $entry.Name + ' -> Skill `' + $entry.Key + '` before the first sentence (once per session, again after compaction).')
+    $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message ('VOICE: reply in ' + $entry.Name + ' -> Skill `' + $entry.Key + '` before first sentence (once/session, after compaction).')
     exit $emit.ExitCode
 }
 
@@ -124,7 +124,7 @@ try {
         $public = @($artifacts | Where-Object { $_.Kind -ne 'write' -or [string]$_.Value -notmatch '(?i)(^|[\\/])(\.ai|\.claude|\.codex|\.agents|plans)[\\/]' })
         $missingLangs = @(Get-VoiceArtifactLanguages -Artifacts $public -Loaded $loaded -Detect ${function:Get-VoiceLanguage} -Cwd $cwdText | Where-Object { $_ -ne $language })
         if ($missingLangs.Count -gt 0 -and (Test-NewGateFingerprint -Name 'WritingVoiceFiles' -Cwd $cwdText -Fingerprint (Get-ShortHash ($sessionId + '|' + ($missingLangs -join ',') + '|' + [string]$compactions)))) {
-            $artifactNote = 'VOICE (written text, incl. code comments/docstrings/help): ' + (@($missingLangs | ForEach-Object { $voiceMap[$_].Name + ' -> Skill `' + $voiceMap[$_].Key + '`' }) -join '; ') + ' not loaded since ' + $(if ($compactions -gt 0) { 'the last compaction' } else { 'start' }) + ', but files/commit/PR text in that language were written. Load it and re-check that text.'
+            $artifactNote = 'VOICE (written text, incl. code comments/docstrings/help): ' + (@($missingLangs | ForEach-Object { $voiceMap[$_].Name + ' -> Skill `' + $voiceMap[$_].Key + '`' }) -join '; ') + ' not loaded since ' + $(if ($compactions -gt 0) { 'the last compaction' } else { 'start' }) + '; load and re-check.'
         }
     }
     # Router standing order (V94): comment/doc prose added to CODE files is a
@@ -148,7 +148,7 @@ try {
             $cfp = Get-ShortHash ($sessionId + '|comments|' + ($commentLangs -join ',') + '|' + [string]$compactions + '|' + [string]($null -ne $skillsValue))
             if (Test-NewGateFingerprint -Name 'WritingVoiceComments' -Cwd $cwdText -Fingerprint $cfp) {
                 $keys = (@($commentLangs | ForEach-Object { $voiceMap[$_].Name + ' -> Skill `' + $voiceMap[$_].Key + '`' }) -join '; ')
-                $cmsg = 'WRITING VOICE CHECK: code comments/docstrings/help text were added in ' + $keys + ' with no load or "Skills used:" entry since ' + $(if ($compactions -gt 0) { 'the last compaction' } else { 'start' }) + '. Load it, re-check those comments, and list it in "Skills used:".'
+                $cmsg = 'WRITING VOICE CHECK: code comments/docstrings/help text were added in ' + $keys + '; no load or "Skills used:" since ' + $(if ($compactions -gt 0) { 'the last compaction' } else { 'start' }) + '. Load, re-check, list in "Skills used:".'
                 exit (Write-StopBlockResult -HookInput $hookInput -HookName 'Writing-Voice-Check' -FindingFingerprint $cfp -EventName $eventName -Message $cmsg -Condition 'required-workflow').ExitCode
             }
         }
@@ -168,7 +168,7 @@ try {
     $since = if ($compactions -gt 0) { 'the last compaction' } else { 'start' }
     $blockMessage = @(
         ('WRITING VOICE CHECK: replies are ' + $entry.Name + '; no `' + $entry.Key + '` load since ' + $since + '.'),
-        ('Load Skill `' + $entry.Key + '` (or read its SKILL.md), then re-check the reply against it (global-writing-voice-rules.md).')
+        ('Load Skill `' + $entry.Key + '` (or SKILL.md) and re-check (global-writing-voice-rules.md).')
     ) -join "`n"
     if ($artifactNote -ne '') { $blockMessage += "`n" + $artifactNote }
     $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Writing-Voice-Check' -FindingFingerprint $fingerprint -EventName $eventName -Message $blockMessage -Condition 'required-workflow'

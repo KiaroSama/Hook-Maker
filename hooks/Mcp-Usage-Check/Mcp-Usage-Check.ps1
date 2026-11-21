@@ -60,7 +60,7 @@ $ErrorActionPreference = 'Stop'
 # because a new topic in the same session must never be silenced by an earlier
 # one. The single exemption is the one the rule makes: a typo or text-only edit.
 $script:ResearchReminder = @(
-    'RESEARCH: each substantive request: global-research-rules.md FULL; live official + three GitHub passes -> .ai/RESEARCH/ sources+digest BEFORE dependents.',
+    'RESEARCH: substantive task: global-research-rules.md FULL; live official + three GitHub passes -> .ai/RESEARCH/ digest.',
     '- Calls/old notes != research; source failure blocks dependents only. Hook proves nothing.'
 ) -join "`n"
 # ponytail: a keyword test, not a parser - "fix the typo and add a feature" is
@@ -177,7 +177,7 @@ if ($eventName -eq 'SessionStart') {
     $note = @(
         'Mcp-Usage-Check: advisory connector review:',
         '- BEFORE selection: global-mcp-rules.md/global-mcp-server-contracts.md FULL; research owner FULL, live docs/GitHub -> .ai/RESEARCH/.',
-        '- Smallest verifying connector; no fit: proceed/explain none.',
+        '- Smallest verifying connector; else explain none.',
         $requirement
     ) -join "`n"
     if ($carry -ne '') { $note += "`n" + $carry }
@@ -309,9 +309,9 @@ if ($eventName -eq 'UserPromptSubmit') {
     }
 
     $noteLines = @(
-        'Mcp-Usage-Check: advisory library/API/docs/URL/DB/GitHub/deploy/memory connector match.',
-        '- BEFORE selection: global-mcp-rules.md/global-mcp-server-contracts.md FULL; live docs, not recalled API/guess.',
-        '- Smallest complete verifying tool.',
+        'Mcp-Usage-Check: advisory connector match.',
+        '- BEFORE selection: global-mcp-rules.md/global-mcp-server-contracts.md FULL; live docs, not guess.',
+        '- Smallest verifying tool.',
         $requirement
     )
     if ($triggerLine -ne '') { $noteLines += $triggerLine }
@@ -421,7 +421,7 @@ if ($triggerList -contains 'rust-anything') {
         $fp = Get-ShortHash ('trigger-rust-anything|' + $sessionId)
         $reason = @(
             'Connector trigger matched (rust-anything); no rust-anything MCP/CLI call or opt-out.',
-            'Load rust-anything:rust-anything and call rust-anything MCP (or CLI), or close "MCP used: none - <reason>".'
+            'Load rust-anything:rust-anything + rust-anything MCP/CLI, or close "MCP used: none - <reason>".'
         ) -join "`n"
         if ($desktopNote -ne '') { $reason += "`n" + $desktopNote }
         $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Mcp-Usage-Check' -EventName $eventName -Reason $reason -FindingFingerprint $fp -Condition 'required-workflow'
@@ -463,7 +463,7 @@ if ($usedMcp) {
         # Stop reads, and an example at the start of a line would satisfy the
         # detector - the hook would then clear its own block.
         ('Final standalone actual servers: "MCP used: ' + $names + '".'),
-        'Only material actual calls, not availability.'
+        'Actual calls only.'
     ) -join "`n"
     if ($desktopNote -ne '') { $reason += "`n" + $desktopNote }
     if ($enforcement -eq 'advisory') {
@@ -487,7 +487,7 @@ if ($triggerKeys -ne '') {
     $fp = Get-ShortHash ('trigger-none|' + $sessionId + '|' + $triggerKeys)
     $reason = @(
         ('Connector trigger matched (' + $triggerKeys + '); no MCP call or line.'),
-        'Use it, or close "MCP used: none - <reason>".'
+        'Use it, or "MCP used: none - <reason>".'
     ) -join "`n"
     if ($desktopNote -ne '') { $reason += "`n" + $desktopNote }
     $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Mcp-Usage-Check' -EventName $eventName -Reason $reason -FindingFingerprint $fp -Condition 'required-workflow'
@@ -497,7 +497,7 @@ if (-not $sessionRelevant) { Exit-WithDesktopNote }
 if (-not (Test-ShouldReport 'none-used')) { Exit-WithDesktopNote }
 $note = @(
     'MCP task; no connected tool called.',
-    'BEFORE answering: global-mcp-rules.md/global-research-rules.md FULL; check omissions.',
+    'BEFORE answering: global-mcp-rules.md/global-research-rules.md FULL.',
     ('Final: ' + $requiredLine)
 ) -join "`n"
 if ($desktopNote -ne '') { $note += "`n" + $desktopNote }

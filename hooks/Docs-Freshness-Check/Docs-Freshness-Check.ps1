@@ -425,7 +425,7 @@ function Get-ReviewRequestLines {
     # change); pure internal changes still clear with -Result NoUpdate.
     [void]$lines.Add('BEFORE review: global-hook-rules.md Hook Change Gate/global-repository-rules.md README FULL, all affected contracts.')
     [void]$lines.Add('Update task-stale tracked public .md/.txt ONLY; no unrelated edits.')
-    [void]$lines.Add('Clear with one acknowledgement: ' + $ackCommand + ' (nothing stale: -Result NoUpdate -Reason "<why no doc became inaccurate>").')
+    [void]$lines.Add('Acknowledge: ' + $ackCommand + ' (none stale: -Result NoUpdate -Reason "<reason>").')
     return $lines.ToArray()
 }
 
@@ -526,7 +526,7 @@ try {
     if ($greenHead -ne '') {
         $sha7 = $greenHead.Substring(0, [Math]::Min(7, $greenHead.Length))
         # Parent evidence cannot waive the changed final SHA's verification.
-        [void]$lines.Add('Tested parent SHA ' + $sha7 + '; reviewed docs commit/push. New SHA UNTESTED: ONE manual final batch or exact blocker; no ancestor green/display-only run.')
+        [void]$lines.Add('Tested parent SHA ' + $sha7 + '; commit/push reviewed docs. New SHA UNTESTED: ONE manual final batch or exact blocker; no ancestor green.')
     }
     $reason = $lines.ToArray() -join "`n"
     # Record the block so THIS hook's own re-entry is recognised; another
@@ -553,7 +553,7 @@ catch {
         [System.IO.File]::WriteAllText($errStampPath, $sessionId)
     }
     catch { }
-    $errMsg = 'DOCS FRESHNESS UNKNOWN (detection error): user-visible change? Manually review tracked README/CHANGELOG/docs; no current-docs claim.'
+    $errMsg = 'DOCS FRESHNESS UNKNOWN (detection error): review tracked README/CHANGELOG/docs manually; no current-docs claim.'
     # Client-aware through the shared adapter: Codex does not render
     # hookSpecificOutput.additionalContext at Stop (only systemMessage), so an
     # unconditional additionalContext here silently drops this warning on Codex.

@@ -60,7 +60,7 @@ $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 
 # ---- SessionStart: state both duties up front (FR-037-05) -------------------
 if ($eventName -eq 'SessionStart') {
-    $note = 'Synapse-Rules-Check: ENFORCED at Stop. (1) Before the first project edit: memory_digest once with tokenBudget, index id/type/preview then full task matches; memory_retrieve minScore0.65 OR project:<slug> tags, never both. (2) Before closing: memory_write durable facts/decisions/verified commands (entityKey/project tag), or end with `Synapse: none - <reason>`. Recall != canonical policy or consent; no secrets, no raw memory disclosure.'
+    $note = 'Synapse-Rules-Check: ENFORCED at Stop. (1) Before first edit: memory_digest once with tokenBudget, index id/type/preview then full task matches; memory_retrieve minScore0.65 OR project:<slug> tags, never both. (2) Before close: memory_write facts/decisions/commands (entityKey/project tag), or `Synapse: none - <reason>`. Recall != canonical policy or consent; no secrets.'
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
     exit $emit.ExitCode
 }
@@ -96,7 +96,7 @@ if ($eventName -eq 'UserPromptSubmit') {
     try { if ([IO.File]::Exists($midPath) -and ([IO.File]::ReadAllText($midPath).Trim()) -eq $midKey) { exit 0 } } catch { }
     try { New-Item -ItemType Directory -Path $stateDir -Force | Out-Null; [IO.File]::WriteAllText($midPath, $midKey) }
     catch { exit 0 }    # an undeliverable once-marker must not turn into a per-prompt note
-    $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message 'SYNAPSE: files changed without store read; Stop will refuse. Now: `memory_digest` + `tokenBudget`, read matches, continue.'
+    $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message 'SYNAPSE: files changed without store read. Run `memory_digest` + `tokenBudget`, read matches.'
     exit $emit.ExitCode
 }
 
@@ -163,8 +163,8 @@ try {
     }
     $lines = New-Object System.Collections.Generic.List[string]
     [void]$lines.Add('SYNAPSE RULES CHECK: ' + [string]$editCount + ' project edits.')
-    if ($missingRead) { [void]$lines.Add('Read duty: no memory_digest/memory_retrieve. Run `memory_digest` with `tokenBudget`, check matches.') }
-    if ($missingWrite) { [void]$lines.Add('Write duty: no memory_write. Save durable facts/decisions (entityKey + project tag; no secrets), or end with `Synapse: none - <reason>`.') }
+    if ($missingRead) { [void]$lines.Add('Read duty: no memory_digest/memory_retrieve. Run `memory_digest` with `tokenBudget`.') }
+    if ($missingWrite) { [void]$lines.Add('Write duty: no memory_write. Save facts/decisions (entityKey+project tag; no secrets), or `Synapse: none - <reason>`.') }
     $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Synapse-Rules-Check' -FindingFingerprint $fingerprint -EventName $eventName -Message ($lines.ToArray() -join "`n") -Condition 'required-workflow'
     exit $emit.ExitCode
 }

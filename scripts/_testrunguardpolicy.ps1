@@ -18,7 +18,7 @@
     Check 'the deny requires complete test policy before any run' (
         $msgDd -match 'global-test-rules\.md FULL' -and $msgDd -match 'CI first: exact pushed-SHA result') $msgDd
     Check 'the deny keeps guarded lifetime and forbids background wrappers' (
-        $msgDd -match 'wall/idle/tree ownership' -and $msgDd -match 'no detached owner') $msgDd
+        $msgDd -match 'Bounds: wall\+idle' -and $msgDd -match 'no detached owner') $msgDd
     # The cadence text is GUIDANCE on the note: it never reaches the command.
     $replDd = Get-Replacement $msgDd
     Check 'the cadence line rides the note, never the replacement command' (

@@ -326,8 +326,7 @@ if ($added.Count -gt 0 -and $inGitRepo) {
 
 if ($added.Count -gt 0) {
     if (-not $secretsExists) {
-        $header = "# Secrets`n`nLocal-only registry of real secrets for this project. This file must stay" +
-            " git-ignored and must never be committed, printed, or shared.`n"
+        $header = "# Secrets`n`nLocal-only secret registry; keep git-ignored, never commit/share.`n"
         $secretsContent = $header
     }
     $entryLines = New-Object System.Collections.Generic.List[string]
@@ -394,7 +393,7 @@ function Get-OutgoingCommits {
         if ($remoteSha -eq $allZero) {
             $revs = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-list', $localSha, '--not', '--remotes') | Where-Object { $_ })
             if ($LASTEXITCODE -ne 0) {
-                [void]$errors.Add('new ref ' + $localRef + ' rev-list failed; outgoing UNKNOWN')
+                [void]$errors.Add('new ref ' + $localRef + ' rev-list failed')
                 continue
             }
         }
@@ -405,12 +404,12 @@ function Get-OutgoingCommits {
             $null = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-parse', '--verify', '--quiet', ($remoteSha + '^{commit}'))
             if ($LASTEXITCODE -ne 0) {
                 $shortRemote = if ($remoteSha.Length -gt 7) { $remoteSha.Substring(0, 7) } else { $remoteSha }
-                [void]$errors.Add('ref ' + $localRef + ' - remote commit ' + $shortRemote + ' unresolved; outgoing UNKNOWN')
+                [void]$errors.Add('ref ' + $localRef + ' remote ' + $shortRemote + ' unresolved')
                 continue
             }
             $revs = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-list', ($remoteSha + '..' + $localSha)) | Where-Object { $_ })
             if ($LASTEXITCODE -ne 0) {
-                [void]$errors.Add('ref ' + $localRef + ' rev-list failed; outgoing UNKNOWN')
+                [void]$errors.Add('ref ' + $localRef + ' rev-list failed')
                 continue
             }
         }
@@ -660,7 +659,7 @@ if ($missingUndocumented.Count -gt 0) {
     [void]$lines.Add('.env missing registry (AUTO_APPEND off): ' + ($missingUndocumented.ToArray() -join ', '))
 }
 if ($placeholders.Count -gt 0) {
-    [void]$lines.Add('Empty placeholder: ' + ($placeholders.ToArray() -join ', '))
+    [void]$lines.Add('Placeholder: ' + ($placeholders.ToArray() -join ', '))
 }
 if ($unused.Count -gt 0) {
     [void]$lines.Add('Registry-only, user decision: ' + ($unused.ToArray() -join ', '))
@@ -671,12 +670,12 @@ if ($needsClassification.Count -gt 0) {
     # with nothing to tell them why. The config .env is this hook's own, beside
     # the installed script; it is inside the client config directory, which the
     # scan excludes, so it can never be mistaken for scanned input.
-    [void]$lines.Add('UNKNOWN, unregistered/advisory: ' + ($needsClassification.ToArray() -join ', ') + '. SECRET_KEYS/PUBLIC_CONFIG_KEYS in hook .env: ' + (Join-Path $PSScriptRoot '.env') + ', not project .env; create, update preserves.')
+    [void]$lines.Add('UNKNOWN: ' + ($needsClassification.ToArray() -join ', ') + '. Set SECRET_KEYS/PUBLIC_CONFIG_KEYS in hook .env: ' + (Join-Path $PSScriptRoot '.env') + ', not project .env.')
 }
 if ($removedPublicConfigKeys.Count -gt 0) {
-    [void]$lines.Add('Removed ' + $removedPublicConfigKeys.Count + ' generated registry entr' + $(if ($removedPublicConfigKeys.Count -eq 1) { 'y' } else { 'ies' }) + ' classified public: ' + ($removedPublicConfigKeys -join ', ') + '.')
+    [void]$lines.Add('Removed ' + $removedPublicConfigKeys.Count + ' public registry entry/ies: ' + ($removedPublicConfigKeys -join ', ') + '.')
 }
-[void]$lines.Add('No value output/Git; rotate leaks, user removal.')
+[void]$lines.Add('No value output/Git; rotate leaks.')
 $message = $lines.ToArray() -join "`n"
 
 if ($GitPrePush) {

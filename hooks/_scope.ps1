@@ -131,7 +131,7 @@ function Get-ResearchWorkflowReminder {
     if ($Skills) {
         return 'RESEARCH: BEFORE selection global-research-workflows.md/global-connected-skill-contracts.md/exact catalogue job FULL. Native /deep-research distinct; partial UNKNOWN, no simulation/action/spend.'
     }
-    return '::deep-research: BEFORE work read CODEWORDS.md/global-research-workflows.md FULL (scope/budgets/stop/evidence/citations/claims). Routing only, not native/Gemini parity or action/agent/spend consent; reply user-language.'
+    return '::deep-research: BEFORE work read CODEWORDS.md/global-research-workflows.md FULL (scope/budgets/stop/evidence/citations/claims). Routing only, no action/spend consent; reply user-language.'
 }
 
 function Get-OperationMcpReminder {
@@ -156,11 +156,11 @@ function Get-OperationMcpReminder {
         [void]$notes.Add('TELEGRAM: BEFORE use global-connected-skill-contracts.md Telegram Operator FULL/job/schema. No deletion.')
     }
     if ($notes.Count -eq 0) { return '' }
-    [void]$notes.Add('Hook grants no actions/spend; UNKNOWN: reconcile, no retry. Availability!=execution/proof; failure!=absence.')
+    [void]$notes.Add('No actions/spend granted; UNKNOWN: reconcile. Availability!=proof.')
     $note = $notes.ToArray() -join "`n"
     $path = Join-Path $StateDir ('McpUsageCheck-operation-' + $Client + '-' + (Get-ShortHash $ProjectRoot.ToLowerInvariant()) + '.claims.json')
     $claim = Invoke-DeliveryClaim -Path $path -Identity (Get-DeliveryIdentity $HookInput) -Fingerprint (Get-ShortHash ($text + '|' + $note))
-    if (-not $claim.Ok) { return 'Operation reminder reservation is unverified; no consent or action was recorded.' }
+    if (-not $claim.Ok) { return 'Operation reminder unverified; no consent recorded.' }
     if (-not $claim.Admitted) { return '' }
     return $note
 }

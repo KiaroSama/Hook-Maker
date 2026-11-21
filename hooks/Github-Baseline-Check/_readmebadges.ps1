@@ -14,7 +14,7 @@
 # of the root README. It never fetches an image and never checks what a badge
 # claims - that is the agent's job with the evidence in front of it.
 
-$script:BadgeGuidance = 'BEFORE README: global-repository-rules.md README FULL; 12 to 16 verified badges/Donate. BEFORE app logo/signing: global-project-lifecycle-rules.md FULL; README!=app logo.'
+$script:BadgeGuidance = 'BEFORE README: global-repository-rules.md README FULL; 12 to 16 verified badges/Donate. App logo/signing: global-project-lifecycle-rules.md FULL.'
 $script:BadgeMinimum = 12
 $script:BadgeMaximum = 16
 # The donation badge and the section it links to. The section is looked for in
@@ -97,11 +97,11 @@ function Get-ReadmeBadgeFormatIssue {
     if ($absent.Count -gt 0) { [void]$issues.Add('mandatory missing: ' + ($absent -join ', ')) }
     if ($badges[$badges.Count - 1].Url -notmatch $script:DonateBadgePattern -and @($badges | Where-Object { $_.Url -match $script:DonateBadgePattern }).Count -gt 0) { [void]$issues.Add('donations badge not last') }
     $shape = @($badges | Where-Object { $_.Url -match '(?i)/style/|/endpoint|\?' -or $_.Hex -eq '' })
-    if ($shape.Count -gt 0) { [void]$issues.Add([string]$shape.Count + ' not plain flat-square /badge/<label>-<value>-<hex>') }
+    if ($shape.Count -gt 0) { [void]$issues.Add([string]$shape.Count + ' not plain flat-square') }
     $dupes = @($hexes | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
     if ($dupes.Count -gt 0) { [void]$issues.Add('shared colour(s) ' + ($dupes -join ', ')) }
     $selfLinks = @($badges | Where-Object { $_.Target -eq '' -or $_.Target -match '(?i)img\.shields\.io' })
-    if ($selfLinks.Count -gt 0) { [void]$issues.Add([string]$selfLinks.Count + ' linking to the image, not a repo path/anchor') }
+    if ($selfLinks.Count -gt 0) { [void]$issues.Add([string]$selfLinks.Count + ' linking to the image') }
     return @($issues)
 }
 
@@ -110,20 +110,20 @@ function Get-ReadmeBadgeNote {
     $lines = New-Object System.Collections.Generic.List[string]
     [void]$lines.Add($script:BadgeGuidance)
     if (-not $State.Found) {
-        [void]$lines.Add('- README missing: useful docs + verified badges, not badge-only.')
+        [void]$lines.Add('- README missing: useful docs + verified badges.')
     }
     elseif (-not $State.Readable) {
         [void]$lines.Add('- README unreadable; badge count UNKNOWN.')
     }
     else {
         if ($State.Count -lt $script:BadgeMinimum) {
-            [void]$lines.Add('- Title badges: ' + $State.Count + ' < ' + $script:BadgeMinimum + '. Add distinct verified facts or report shortfall; no padding. Advisory, not defect.')
+            [void]$lines.Add('- Title badges: ' + $State.Count + ' < ' + $script:BadgeMinimum + '. Add verified facts or report shortfall; no padding. Advisory.')
         }
         elseif ($State.Count -gt $script:BadgeMaximum) {
-            [void]$lines.Add('- Title badges: ' + $State.Count + ' > ' + $script:BadgeMaximum + '. Trim lower-priority facts. Advisory, not defect.')
+            [void]$lines.Add('- Title badges: ' + $State.Count + ' > ' + $script:BadgeMaximum + '. Trim lower-priority facts. Advisory.')
         }
         if ($State.Count -gt 0 -and -not $State.Centred) {
-            [void]$lines.Add('- Center badge rows: one <div align="center">, blank lines after opening/before </div>.')
+            [void]$lines.Add('- Badges: one <div align="center">, blank lines after opening/before </div>.')
         }
         if (-not $State.DonateBadge) {
             [void]$lines.Add('- Title lacks Support-donations badge.')
@@ -133,7 +133,7 @@ function Get-ReadmeBadgeNote {
             [void]$lines.Add('- Badge format: ' + ($format -join '; ') + '.')
         }
         if (-not $State.DonateSection) {
-            [void]$lines.Add('- Missing ## Donate/#donate: verbatim authorized public text; never invent/alter wallets.')
+            [void]$lines.Add('- Missing ## Donate/#donate: verbatim authorized text; never invent wallets.')
         }
     }
     return ($lines.ToArray() -join "`n")

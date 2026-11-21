@@ -214,7 +214,7 @@ try {
     # unauthenticated gh -> limitation note (not a "no updates" claim)
     Set-Mock -AuthExit 1
     $r = Fire -HookPath $DependabotHook -Cwd $repoA
-    Check 'gh unauthenticated -> limitation reported, no claim' ($r.Out -match 'could NOT be verified' -and $r.Out -match 'not authenticated') ('out=' + $r.Out)
+    Check 'gh unauthenticated -> limitation reported, no claim' ($r.Out -match 'UNVERIFIED' -and $r.Out -match 'not authenticated') ('out=' + $r.Out)
     $r = Fire -HookPath $DependabotHook -Cwd $repoA
     Check 'unchanged limitation -> silent (cooldown)' ($r.Out -eq '')
 
@@ -270,8 +270,8 @@ try {
     Check 'a SECURITY-marked PR is described as classification only, not confirmed' ($r.Out -match 'A PR above is marked SECURITY \(by title/label, not independently verified severity\)\.') $r.Out
     Check 'the old "confirmed security update - prioritize" wording is gone' ($r.Out -notmatch 'confirmed security update - prioritize') $r.Out
     Check 'unrelated/non-critical PRs (including SECURITY-marked) are explicitly deferred to a separate task' (
-        $r.Out -match 'Unrelated incl\.SECURITY: defer' -and $r.Out -match 'interrupt only requested/directly relevant/reliably confirmed unsafe') $r.Out
-    Check 'pending Dependabot PRs are never a reason to block or delay unrelated work' ($r.Out -match 'Unrelated incl\.SECURITY: defer; interrupt only requested/directly relevant/reliably confirmed unsafe') $r.Out
+        $r.Out -match 'Unrelated incl\.SECURITY: defer' -and $r.Out -match 'interrupt only if requested/relevant/confirmed unsafe') $r.Out
+    Check 'pending Dependabot PRs are never a reason to block or delay unrelated work' ($r.Out -match 'Unrelated incl\.SECURITY: defer; interrupt only if requested/relevant/confirmed unsafe') $r.Out
     Check 'the old "REST of these" wording is gone' ($r.Out -notmatch 'REST of these') $r.Out
     Check 'the old unconditional "review before unrelated work" wording is gone' ($r.Out -notmatch 'Review these BEFORE unrelated work') $r.Out
     Check 'still no auto-merge instruction exists' ($r.Out -notmatch '(?i)automatically merge' -and $r.Out -notmatch '(?i)merge (it|them|these) now')
@@ -297,7 +297,7 @@ try {
     $repoC = New-GitRepo 'depc'
     Set-Mock -PrExit 1
     $r = Fire -HookPath $DependabotHook -Cwd $repoC
-    Check 'pr query failure -> limitation reported' ($r.Out -match 'could NOT be verified')
+    Check 'pr query failure -> limitation reported' ($r.Out -match 'UNVERIFIED')
 
     # Stop event -> silent (context hook)
     Set-Mock -PrJson $prJson

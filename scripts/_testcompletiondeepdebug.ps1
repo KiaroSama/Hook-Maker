@@ -57,7 +57,7 @@
     Check 'deep-debug active with NO guarded evidence -> blocks' ($r.Out -match '"systemMessage"') $r.Out
     Check 'the block carries the exact DEEP DEBUG: BLOCKED (reason) line' ($reason -match '(?m)^DEEP DEBUG: BLOCKED \(') $reason
     Check 'the block names the missing evidence and the guarded-runner recovery' (
-        $reason -match 'no current guarded observation/result/active' -and $reason -match 'Run-Tests-Guarded\.ps1') $reason
+        $reason -match 'no current guarded run/result' -and $reason -match 'Run-Tests-Guarded\.ps1') $reason
     # Once per session: the unchanged no-evidence state does not re-block.
     $r = Fire -Copy $c -Cwd $p
     Check 'anti-loop: the unchanged no-evidence BLOCKED state emits once per session' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out

@@ -65,7 +65,7 @@
         $r.Out -match 'CI unavailable: final-tree guarded pass') $r.Out
     Check 'Claude: the notice requires dated command/evidence and per-task re-verification' (
         $r.Out -match 'UTC evidence .ai/TESTING_NOTES.md' -and
-        $r.Out -match 'recheck per task, no waiver') $r.Out
+        $r.Out -match 'recheck per task') $r.Out
 
     # Codex: same message text, but through the officially supported common
     # systemMessage field - no hookSpecificOutput/additionalContext (undocumented

@@ -118,14 +118,14 @@ $filesClause = if ($existingFiles.Count -gt 0) {
     'Other files currently in .ai/: ' + ($existingFiles -join ', ') + '.'
 }
 else {
-    'Only memory.md exists; specialized file ONLY for reusable task knowledge (LESSON.md/REFERENCE.md).'
+    'Only memory.md exists; specialized file ONLY for reusable task knowledge.'
 }
 
 # E-07: the durable-value guidance names what a debugging/::deep-debug task
 # records and what it never stores. Guidance text only - encoding of the files
 # themselves is validated by Utf8-Encoding-Check through its own state (no
 # repository rescan here, no dependence on same-event hook order).
-$reason = 'AI MEMORY CHECK: ' + $reasonWhy + '. BEFORE update/debug notes: ai-context-memory-policy.md/ai-context-memory-details.md FULL. ' + $filesClause + ' Dedupe/link, memory.md LAST; strict UTF-8. No durable value: explain/no write. Once/session.'
+$reason = 'AI MEMORY CHECK: ' + $reasonWhy + '. BEFORE update/debug notes: ai-context-memory-policy.md/ai-context-memory-details.md FULL. ' + $filesClause + ' Dedupe/link, memory.md LAST; strict UTF-8. No durable value: explain/no write.'
 # Record the block so THIS hook's own re-entry is recognised; another
 # gate's block must not mute it, and its own must not repeat.
 $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ai-Memory-Check' -EventName $eventName -Reason $reason

@@ -123,10 +123,10 @@ catch { }
 
 $message = @(
     ('Code newer than index (' +
-        $dbUtc.ToString('yyyy-MM-dd HH:mm:ss') + ' UTC, newest work: ' + $workUtc.ToString('yyyy-MM-dd HH:mm:ss') + ' UTC).'),
+        $dbUtc.ToString('yyyy-MM-dd HH:mm:ss') + ' vs ' + $workUtc.ToString('yyyy-MM-dd HH:mm:ss') + ').'),
     'Watcher UNVERIFIED: lag/absent.',
-    ('Before trusting graph: index_status; stale -> index_repository(repo_path=' + ($cwd | ConvertTo-Json -Compress) + ', mode="moderate", persistence=true).'),
-    'Structure: symbols/exports/imports/calls/inheritance/entries; docs/format/generated exempt.'
+    ('Before query: index_status; stale -> index_repository(repo_path=' + ($cwd | ConvertTo-Json -Compress) + ', mode="moderate", persistence=true).'),
+    'Structure only; docs/format/generated exempt.'
 ) -join "`n"
 
 $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $message

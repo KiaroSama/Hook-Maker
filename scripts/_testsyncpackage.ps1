@@ -145,7 +145,7 @@
     $ackText = ($ackGone.Error + $ackGone.Out) -replace '\s+', ' '
     Check 'and the refusal says the source will be staged again rather than blaming the reviewer' (
         $ackText -match 'Package damaged: ' -and
-        $ackText -match 'unprocessed, next event restages') $ackText
+        $ackText -match 'next event restages') $ackText
 
     # Put it back, tamper with the manifest's identity, and try again.
     Move-Item -LiteralPath $movedAside -Destination $secondGeneration[0].FullName -Force

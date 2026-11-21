@@ -40,8 +40,7 @@ function Get-GitWorkflowReminder {
     $kind = Get-GitWorkflowCommandKind -Command ([string](Get-Field $toolInput 'command'))
     if ($kind -eq 'branch') {
         return ('Git-Sync-Check: advisory default branch; side branch/worktree/PR ' +
-            'needs user request or reported forcing reason (protected default ' +
-            'branch); one task branch/PR, account at closure. ' +
+            'needs user request or reported forcing reason; one task branch/PR. ' +
             'Rule: global-repository-rules.md.')
     }
     if ($kind -eq 'push') {
@@ -49,8 +48,8 @@ function Get-GitWorkflowReminder {
         if ([string]::IsNullOrWhiteSpace($cwd) -or $null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return '' }
         $dirty = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'status', '--porcelain', '--untracked-files=no') -TimeoutSeconds 5 | Where-Object { $_ })
         if ($LASTEXITCODE -ne 0 -or $dirty.Count -eq 0) { return '' }
-        return ('Git-Sync-Check: task has ' + $dirty.Count + ' uncommitted change(s). A task pushes ONCE, ' +
-            'after all work; all-host manual workflow_dispatch exact-SHA batch. Finish/commit/push. ' +
+        return ('Git-Sync-Check: task has ' + $dirty.Count + ' uncommitted change(s). Pushes ONCE; ' +
+            'manual workflow_dispatch exact-SHA batch. ' +
             'Rule: global-repository-rules.md.')
     }
     return ''
@@ -61,14 +60,14 @@ function Get-GitWorkflowReminder {
 # unavailable gh or a non-GitHub remote says so rather than claiming none.
 function Get-OpenPullRequestLine {
     param([Parameter(Mandatory = $true)][string]$RepoPath)
-    if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) { return 'Open pull requests: UNCHECKED (gh missing).' }
+    if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) { return 'Open PRs: UNCHECKED (gh missing).' }
     Push-Location -LiteralPath $RepoPath
     try { $raw = @(Invoke-QuietCommand -FilePath gh -ArgumentList @('pr', 'list', '--state', 'open', '--limit', '20', '--json', 'number,headRefName') -TimeoutSeconds 8); $ghExit = $LASTEXITCODE }
     finally { Pop-Location }
-    if ($ghExit -ne 0) { return 'Open pull requests: UNCHECKED (gh pr list failed: remote/access).' }
+    if ($ghExit -ne 0) { return 'Open PRs: UNCHECKED (gh failed).' }
     $prs = @()
-    try { $prs = @(($raw -join "`n") | ConvertFrom-Json) } catch { return 'Open pull requests: UNCHECKED (gh output unreadable).' }
-    if ($prs.Count -eq 0) { return 'Open pull requests: none.' }
+    try { $prs = @(($raw -join "`n") | ConvertFrom-Json) } catch { return 'Open PRs: UNCHECKED (unreadable).' }
+    if ($prs.Count -eq 0) { return 'Open PRs: none.' }
     $names = @($prs | ForEach-Object { '#' + [string]$_.number + ' (' + [string]$_.headRefName + ')' })
-    return ('Open pull requests: ' + ($names -join ', ') + ' - merge/close OR report each survivor+reason.')
+    return ('Open PRs: ' + ($names -join ', ') + ' - merge/close or report survivor+reason.')
 }

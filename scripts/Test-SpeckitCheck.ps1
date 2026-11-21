@@ -165,7 +165,7 @@ try {
         $r.Out -match 'global-spec-kit-rules.md/global-project-lifecycle-rules.md') $r.Out
     Check 'only dependent work waits' ($r.Out -match 'ask unknowns') $r.Out
     Check 'intake retains ownership without implicit cross-project repair' (
-        $r.Out -match 'Newest folder != owner' -and $r.Out -match 'other-project needs consent/handoff') $r.Out
+        $r.Out -match 'Newest!=owner' -and $r.Out -match 'other-project needs consent') $r.Out
     Check 'the old "finish existing tasks before starting anything else" is gone' (
         $r.Out -notmatch 'before starting something else') $r.Out
 
@@ -399,7 +399,7 @@ try {
         ($merged.Count -eq $script:HookMakerExcludedDirs.Count + 1)) ($merged -join ',')
 
     Write-Host '--- monthly Spec Kit refresh advisory (files only) ---' -ForegroundColor Cyan
-    $refreshText = 'Refresh: `specify integration status` -> `specify integration upgrade <key>` EACH installed -> `specify extension update`; date .ai/COMMANDS.md.'
+    $refreshText = 'Refresh: `specify integration status` -> `specify integration upgrade <key>` EACH -> `specify extension update`; date .ai/COMMANDS.md.'
     function New-RefreshProject {
         param([string]$Name, [AllowNull()][object]$RecordedDaysAgo)
         $root = New-SpeckitProject -Name $Name -WithInfrastructure -WithConstitution
