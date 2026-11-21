@@ -50,7 +50,7 @@ jobs:
           $expectedFailed = if ('${{ matrix.subject }}' -eq 'baseline') { 24 } else { 0 }
           # Nine additional shared libraries each add missing/empty I02 cases.
           # The historical subject predates them and remains at 36.
-          $expectedCases = if ('${{ matrix.subject }}' -eq 'baseline') { 36 } else { 54 }
+          $expectedCases = if ('${{ matrix.subject }}' -eq 'baseline') { 36 } else { 56 }
           if ($report.cases.Count -ne $expectedCases -or $report.unexpected -ne 0 -or $report.failed -ne $expectedFailed) { throw 'Incomplete or unexpected native evidence.' }
           exit 0
       - name: Preserve exact source and remove historical workspace

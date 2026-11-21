@@ -75,15 +75,16 @@ function Test-GraphMissesMarkdown {
     catch { }
     return $true
 }
-$markdownSetupLine = '- Missing ignored Markdown: graphify-markdown.md FULL -> graphify extract . --no-gitignore --code-only -> graphify update .'
+$markdownSetupLine = '- Missing ignored Markdown: graphify-markdown.md FULL -> graphify extract . --no-gitignore --code-only -> graphify update .; no execution.'
 $missesMarkdown = Test-GraphMissesMarkdown -Root $cwd
 
 # Reminder for the graph-EXISTS case (read the graph; do not re-browse the tree).
 $haveGraphNote = @(
-    'Graph-Read-Check: advisory graphify-out/graph.json; broad architecture/call/impact questions: scoped graph first.',
-    '- graphify query "<q>", graphify path "<A>" "<B>", graphify explain "<c>".',
-    '- Source-confirm; small/docs/config/secret fixes exempt.',
-    'CMM code / Graphify docs-cross-cut; covered changes: graphify update .'
+    'Graph-Read-Check: advisory graphify-out/graph.json; broad architecture/relationships/call/impact/refactor questions: scoped graph first.',
+    '- graphify query "<question>" for a specific question.',
+    '- graphify path "<A>" "<B>" for a relationship; graphify explain "<concept>" for a focused concept.',
+    '- Source-confirm; isolated/docs/config/secrets/small fixes exempt.',
+    'Both: CMM code/Graphify docs-media-cross-cut; covered changes: graphify update .; isolated edits exempt.'
 ) -join "`n"
 if ($graphExists -and $missesMarkdown) { $haveGraphNote += "`n" + $markdownSetupLine }
 

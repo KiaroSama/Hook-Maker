@@ -62,14 +62,14 @@ if ($eventName -eq 'UserPromptSubmit') {
 }
 
 if ($indexed) {
-    $note = 'Cbm-Read-Check: advisory, indexed; use get_architecture/search_graph/trace_path/get_code_snippet/detect_changes + check_index_coverage; source-confirm; isolated edits exempt.'
+    $note = 'Cbm-Read-Check: advisory, indexed; before broad code reads use get_architecture/search_graph/trace_path/get_code_snippet/detect_changes, check_index_coverage + source-confirm citations; isolated edits exempt.'
 }
 else {
     $inspectCommand=Get-CbmCliAdvice -Service $service -Arguments @('allow-root','--list')
     $approveCommand=Get-CbmCliAdvice -Service $service -Arguments @('allow-root','--approve-sensitive',$cwd)
-    $manualAdvice=' Owner shell: '+$inspectCommand+'; sensitive consent: '+$approveCommand
+    $manualAdvice=' Authorized owner shell only: '+$inspectCommand+'; exact sensitive root consent only: '+$approveCommand
     $rootJson=$cwd|ConvertTo-Json -Compress
-    $note = 'Cbm-Read-Check: advisory, index absent; expected ' + $dbPath + '. Non-doc: index_repository(repo_path=' + $rootJson + ', mode="moderate", persistence=true); verify index_status/watcher, then query. Refusal: global-mcp-windows-cmm.md FULL, exact authorized service/root only. No parent/source move/junction/ACL weakening or sandbox service-write. Shell refusal != MCP outage; Approval != restart.' + $manualAdvice
+    $note = 'Cbm-Read-Check: advisory, index absent; expected ' + $dbPath + '. Non-doc: index_repository(repo_path=' + $rootJson + ', mode="moderate", persistence=true); verify index_status/watcher, then query. Refusal: global-mcp-windows-cmm.md FULL, exact authorized service/root only; compare approved separator spelling/marker, preserve grants/backup/atomic concurrency. No parent/source move/junction/ACL weakening or sandbox service-write. Shell refusal != MCP outage; cache-private/identity: newest worker log path/SID/cache/runtime ancestor ACL. Approval != restart; reload only proven stale binary/env/dead connection, verify query/parser warnings.' + $manualAdvice
 }
 
 # One message per (session, project, index state). Indexing the project during
