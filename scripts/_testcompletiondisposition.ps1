@@ -141,7 +141,7 @@ function Invoke-DispositionEntryRegression {
     try{
         $children+=Invoke-DispositionEntry $requests[0] 'pwsh'
         $children+=Invoke-DispositionEntry $requests[1] 'powershell.exe'
-        foreach($child in $children){$r=Complete-DispositionEntry $child;Check 'historical disposition real entry succeeds' ($r.Exit-eq0-and$r.Out-match'Original failure retained'-and$r.Out-notmatch'PASS recorded') ($r.Out+$r.Err)}
+        foreach($child in $children){$r=Complete-DispositionEntry $child;Check 'historical disposition real entry succeeds' ($r.Exit-eq0-and$r.Out-match'original kept|Original failure retained'-and$r.Out-notmatch'PASS recorded') ($r.Out+$r.Err)}
     }finally{
         foreach($child in $children){try{if(-not$child.Process.HasExited){$null=Stop-ProcessTree -ProcessId $child.Process.Id -RootCreated $child.Created}}catch{}}
     }

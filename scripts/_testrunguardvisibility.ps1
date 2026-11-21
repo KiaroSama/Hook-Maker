@@ -41,7 +41,7 @@
         # A refusal that does not name the replacement is one the reader cannot
         # act on, which is the failure mode the hook rules single out.
         Check ('and the refusal names the silent form: ' + $command) (
-            (Get-Message $r.Out) -match 'Current session or -Wait -NoNewWindow|Headless default; visible only human-needed|Direct captured pwsh/python/node; no window|Drop -NoExit') $r.Out
+            (Get-Message $r.Out) -match 'Use current session or -Wait -NoNewWindow|Use headless|Run directly; no window|Drop -NoExit') $r.Out
     }
 
     # =====================================================================

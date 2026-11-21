@@ -116,7 +116,7 @@ if (-not $isStopEvent) {
             $headline,
             $bullet1,
             $bullet2,
-            "- BEFORE splitting: global-architecture-rules.md FULL."
+            "- BEFORE splitting: global-architecture-rules.md FULL. Tests/worker briefs count."
         )
     }
     $note = $lines -join "`n"

@@ -341,7 +341,7 @@ try {
     New-SourceFile (Join-Path $proj17 'sub\deep.py') 1000
     $r = Fire -HookPath $hc17.Script -Cwd $proj17 -EventName 'Stop' -LocalAppData $hc17.LocalAppData
     $msg17 = Get-Advisory $r.Out
-    Check '21a. reaching the scan ceiling reports PARTIAL coverage' ($msg17 -match '(?i)PARTIAL scan') $msg17
+    Check '21a. reaching the scan ceiling reports PARTIAL coverage' ($msg17 -match '(?i)PARTIAL:') $msg17
     Check '21b. a normal small scan is NOT marked partial (case 9 report was clean)' ($msg6 -notmatch '(?i)PARTIAL') $msg6
     # R1: a ceiling-only partial must name the FILE ceiling in the OFFENDER report -
     # not a read failure, and not the directory/time limit that were not hit.
@@ -361,7 +361,7 @@ try {
     $msgD1 = Get-Advisory $rD1.Out
     Check 'D1. MAX_FILES is a real per-file ceiling: 3 offenders reported, not all 10 scanned' (
         $msgD1 -match '\b3 source file\(s\) exceed 800 lines' -and $msgD1 -notmatch '\b10 source file') $msgD1
-    Check 'D3. partial coverage is flag-driven: PARTIAL wording appears though the stack ended empty' ($msgD1 -match '(?i)PARTIAL scan') $msgD1
+    Check 'D3. partial coverage is flag-driven: PARTIAL wording appears though the stack ended empty' ($msgD1 -match '(?i)PARTIAL:') $msgD1
 
     # =====================================================================
     Write-Host '--- Stop scan: a PARTIAL scan with NO offender is not a false silence ---' -ForegroundColor Cyan
@@ -377,7 +377,7 @@ try {
     Check 'D2a. a partial no-offender scan is NOT silent (advisory emitted, exit 0)' (
         $rD2.Exit -eq 0 -and $rD2.Out -ne '' -and $rD2.Err -eq '') ("exit=$($rD2.Exit) out=[$($rD2.Out)] err=[$($rD2.Err)]")
     Check 'D2b. the advisory states coverage was INCOMPLETE and is NOT a decision:block' (
-        $msgD2 -match '(?i)coverage was INCOMPLETE' -and $rD2.Out -notmatch '"decision"') $rD2.Out
+        $msgD2 -match '(?i)INCOMPLETE scan' -and $rD2.Out -notmatch '"decision"') $rD2.Out
     Check 'D2c. the unscanned oversized file is NOT falsely claimed as seen' ($msgD2 -notmatch 'deep\.py') $msgD2
 
     # =====================================================================
@@ -444,7 +444,7 @@ try {
     try { $parsedPartX = $rPartX.Out | ConvertFrom-Json } catch { $parsedPartX = $null }
     Check 'S3. partial no-offender advisory on CODEX uses systemMessage and is not a block' (
         $null -ne $parsedPartX -and $null -ne $parsedPartX.PSObject.Properties['systemMessage'] -and
-        ([string]$parsedPartX.systemMessage) -match '(?i)coverage was INCOMPLETE' -and
+        ([string]$parsedPartX.systemMessage) -match '(?i)INCOMPLETE scan' -and
         $rPartX.Out -notmatch '"decision"') $rPartX.Out
 
     $hcPartC = New-IsolatedHookCopy -EnvContent "MAX_FILES=1`n"
@@ -456,7 +456,7 @@ try {
     try { $parsedPartC = $rPartC.Out | ConvertFrom-Json } catch { $parsedPartC = $null }
     Check 'S4. partial no-offender advisory on CLAUDE uses non-continuing systemMessage and is not a block' (
         $null -ne $parsedPartC -and $null -ne $parsedPartC.PSObject.Properties['systemMessage'] -and
-        ([string]$parsedPartC.systemMessage) -match '(?i)coverage was INCOMPLETE' -and
+        ([string]$parsedPartC.systemMessage) -match '(?i)INCOMPLETE scan' -and
         $rPartC.Out -notmatch '"decision"') $rPartC.Out
 
     # =====================================================================
@@ -485,7 +485,7 @@ try {
         Check 'R1. an unreadable file yields an advisory (exit 0, non-empty, no stderr) - not a silent all-clear' (
             $rRead.Exit -eq 0 -and $rRead.Out -ne '' -and $rRead.Err -eq '') ("exit=$($rRead.Exit) out=[$($rRead.Out)] err=[$($rRead.Err)]")
         Check 'R2. the advisory states coverage was INCOMPLETE and names a read failure (not only a ceiling)' (
-            $msgRead -match '(?i)coverage was INCOMPLETE' -and $msgRead -match '(?i)unreadable files/directories') $msgRead
+            $msgRead -match '(?i)INCOMPLETE scan' -and $msgRead -match '(?i)unreadable files/directories') $msgRead
         Check 'R3. the incomplete-coverage advisory is NOT a decision:block' ($rRead.Out -notmatch '"decision"') $rRead.Out
     }
     else {
@@ -517,7 +517,7 @@ try {
         $msgR1 = Get-Advisory $rR1.Out
         Check 'R1a. the readable offender is still reported' ($msgR1 -match 'big\.py \(900 lines\)') $msgR1
         Check 'R1b. the offender report marks PARTIAL and names the READ FAILURE cause' (
-            $msgR1 -match '(?i)PARTIAL scan' -and $msgR1 -match '(?i)unreadable files/directories') $msgR1
+            $msgR1 -match '(?i)PARTIAL:' -and $msgR1 -match '(?i)unreadable files/directories') $msgR1
         Check 'R1c. it does NOT falsely claim a scan ceiling / directory / time limit was hit' (
             $msgR1 -notmatch '(?i)scan ceiling' -and $msgR1 -notmatch '(?i)directory ceiling' -and $msgR1 -notmatch '(?i)time limit') $msgR1
     }
@@ -539,7 +539,7 @@ try {
     Check 'R2a. the root offender IS reported (root directory was traversed)' ($msgR2 -match 'big\.py \(900 lines\)') $msgR2
     Check 'R2b. the file behind the directory ceiling is NOT reached' ($msgR2 -notmatch 'deep\.py') $msgR2
     Check 'R2c. coverage is PARTIAL and the cause names the DIRECTORY ceiling (not files/time/read failure)' (
-        $msgR2 -match '(?i)PARTIAL scan' -and $msgR2 -match '(?i)directory ceiling 1 reached' -and
+        $msgR2 -match '(?i)PARTIAL:' -and $msgR2 -match '(?i)directory ceiling 1 reached' -and
         $msgR2 -notmatch '(?i)source-file ceiling' -and $msgR2 -notmatch '(?i)time limit' -and $msgR2 -notmatch '(?i)unreadable files/directories') $msgR2
 
     # =====================================================================
@@ -584,7 +584,7 @@ try {
     Check 'T1a. the scan stops MID-directory: only 2 of the 10 source files are scanned before the time trip' (
         $msgT1 -match '\b2 source file\(s\) exceed 800 lines' -and $msgT1 -notmatch '\b10 source file') $msgT1
     Check 'T1b. coverage is PARTIAL and the cause names the TIME limit (not files/dirs/read failure)' (
-        $msgT1 -match '(?i)PARTIAL scan' -and $msgT1 -match '(?i)scan time limit 5s reached' -and
+        $msgT1 -match '(?i)PARTIAL:' -and $msgT1 -match '(?i)scan time limit 5s reached' -and
         $msgT1 -notmatch '(?i)source-file ceiling' -and $msgT1 -notmatch '(?i)directory ceiling' -and
         $msgT1 -notmatch '(?i)unreadable files/directories') $msgT1
     Check 'T1c. the mid-directory time report is a client-aware advisory, never a decision:block' (

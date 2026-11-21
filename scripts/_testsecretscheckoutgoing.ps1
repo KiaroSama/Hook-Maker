@@ -392,5 +392,5 @@
     Add-Commit $unresolvable 'clean change'
     $fakeRemote = 'deadbeef' + ('0' * 32)
     $rUnresolvable = FireGitPrePush -Cwd $unresolvable -StdinText (Get-RefUpdateLine -Repo $unresolvable -RemoteSha $fakeRemote)
-    Check 'unresolvable remote SHA fails closed (blocked with incomplete-scan message)' ($rUnresolvable.Exit -eq 1 -and ($rUnresolvable.Err -replace '\s+', ' ') -match 'Outgoing coverage UNKNOWN:' -and ($rUnresolvable.Err -replace '\s+', ' ') -match 'remote commit [0-9a-f]{7} unresolved; outgoing UNKNOWN') $rUnresolvable.Err
+    Check 'unresolvable remote SHA fails closed (blocked with incomplete-scan message)' ($rUnresolvable.Exit -eq 1 -and ($rUnresolvable.Err -replace '\s+', ' ') -match 'Outgoing coverage UNKNOWN:' -and ($rUnresolvable.Err -replace '\s+', ' ') -match 'remote [0-9a-f]{7} unresolved') $rUnresolvable.Err
     Check 'incomplete-scan block never prints a secret value' ($rUnresolvable.Err -notlike '*bigrangevalue*' -and $rUnresolvable.Err -notlike '*bigcleanvalue*') $rUnresolvable.Err

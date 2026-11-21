@@ -408,7 +408,7 @@ try {
     Add-Commit $projUnknownStop 'seed'
     $r = Fire -Cwd $projUnknownStop -EventName 'Stop'
     Check 'Unknown-only Stop output is never decision:block' ($r.Out -notlike '*"decision":"block"*') $r.Out
-    Check 'Unknown-only Stop output still surfaces the advisory context' ($r.Out -like '*UNKNOWN, unregistered/advisory:*WIDGET_ID*') $r.Out
+    Check 'Unknown-only Stop output still surfaces the advisory context' ($r.Out -like '*UNKNOWN:*WIDGET_ID*') $r.Out
     Check 'Unknown-only Stop exits zero' ($r.Exit -eq 0) $r.Out
 
     Write-Host '--- the advisory names WHICH .env, and that answer is true ---' -ForegroundColor Cyan
@@ -434,7 +434,7 @@ try {
     Add-Commit $projWrongEnv 'seed'
     $rWrong = Fire -Cwd $projWrongEnv -EventName 'Stop'
     Check 'PUBLIC_CONFIG_KEYS in the scanned project .env does NOT classify the key' (
-        $rWrong.Out -like '*UNKNOWN, unregistered/advisory:*WIDGET_ID*') $rWrong.Out
+        $rWrong.Out -like '*UNKNOWN:*WIDGET_ID*') $rWrong.Out
 
     # The other half: the same key in the hook's own .env does classify it.
     $rightHook = New-ConfiguredHookCopy @{ PUBLIC_CONFIG_KEYS = 'WIDGET_ID' }
@@ -444,7 +444,7 @@ try {
     Add-Commit $projRightEnv 'seed'
     $rRight = Fire -Cwd $projRightEnv -EventName 'Stop' -HookPath $rightHook
     Check 'PUBLIC_CONFIG_KEYS in the hook''s own .env DOES classify the key' (
-        $rRight.Out -notlike '*UNKNOWN, unregistered/advisory:*WIDGET_ID*') $rRight.Out
+        $rRight.Out -notlike '*UNKNOWN:*WIDGET_ID*') $rRight.Out
 
     Write-Host '--- Stop event: a successful auto-add alone never blocks (advisory only) ---' -ForegroundColor Cyan
     $projAutoAddStop = New-Proj 'AutoAddStopNonBlocking'
@@ -580,7 +580,7 @@ try {
     Check 'an ignored .venv is never reported as a tracked/staged secret file' ($r.Out -notlike '*.venv*') $r.Out
     Check 'token-shaped constants vendored inside .venv are never registered as secrets' (
         $r.Out -notlike '*SAMPLE_JWT*' -and $r.Out -notlike '*SAMPLE_B64*' -and $r.Out -notlike '*FAKE_API_KEY*') $r.Out
-    Check 'the whole .venv directory is never classified as a secret' ($r.Out -notlike '*UNKNOWN, unregistered/advisory:*.venv*') $r.Out
+    Check 'the whole .venv directory is never classified as a secret' ($r.Out -notlike '*UNKNOWN:*.venv*') $r.Out
     $venvTracked = @(& git -C $venv ls-files -- .venv | Where-Object { $_ })
     Check 'the hook never tracks the ignored .venv as a side effect' ($venvTracked.Count -eq 0) ($venvTracked -join ', ')
     $rVenvPush = FireGitPrePush -Cwd $venv -StdinText (Get-RefUpdateLine -Repo $venv)

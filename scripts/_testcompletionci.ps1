@@ -91,7 +91,7 @@
     $ciDirty = Invoke-CiCase -Name 'cidirty' -Record @{ Evidence = 'ci-green' } -Dirty
     Check 'CI2: a dirty working tree is still reported' $ciDirty.Reported $ciDirty.Out
     Check 'CI2: and the refusal says the tree has uncommitted changes' (
-        $ciDirty.Out -match 'uncommitted changes') $ciDirty.Out
+        $ciDirty.Out -match 'dirty tree|uncommitted changes') $ciDirty.Out
     # Evidence must be NEWER than what it excuses. The failure above ended 30
     # minutes ago, so a record observed 90 minutes ago never saw it.
     $ciStale = Invoke-CiCase -Name 'cistale' -Record @{ Evidence = 'ci-green'; AgeMinutes = 90 }
