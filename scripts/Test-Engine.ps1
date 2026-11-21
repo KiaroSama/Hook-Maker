@@ -34,7 +34,7 @@ function Test-SyncReviewNotice {
     try { $message = [string](($Output | ConvertFrom-Json).hookSpecificOutput.additionalContext) } catch { return $false }
     return ($message -match '^Cross-Project-\.ai-Knowledge-Sync: advisory profile=grp, route=\S+' -and
         $message -match 'destination=.+, source=.+, manifest=.+manifest\.json, staged=.+\. Destination rules;' -and
-        $message -match 'Review, even no import: .+-Acknowledge .+-ContentFingerprint ')
+        $message -match 'Review \(even no import\): .+-Acknowledge .+-ContentFingerprint ')
 }
 
 function New-Project {

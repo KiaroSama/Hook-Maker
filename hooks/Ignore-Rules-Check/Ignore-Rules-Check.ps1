@@ -266,7 +266,7 @@ if ($ruleAdvice.Count -gt 0 -and -not $GitPrePush) {
     $adviceFp = Get-ShortHash ((@($ruleAdvice | Sort-Object)) -join '|')
     $seenFp = ''; try { if (Test-Path -LiteralPath $adviceState -PathType Leaf) { $seenFp = ([System.IO.File]::ReadAllText($adviceState)).Trim() } } catch { }
     if ($seenFp -ne $adviceFp) {
-        $adviceLine = 'Unprotected; review EXTRA_PATTERNS/.gitignore: ' + ($ruleAdvice -join ', ')
+        $adviceLine = 'Unprotected: .env EXTRA_PATTERNS/.gitignore review: ' + ($ruleAdvice -join ', ')
         try { New-Item -ItemType Directory -Path (Split-Path -Parent $adviceState) -Force | Out-Null; [System.IO.File]::WriteAllText($adviceState, $adviceFp) } catch { }
     }
 }
@@ -280,9 +280,9 @@ $lines = New-Object System.Collections.Generic.List[string]
 [void]$lines.Add('Ignore (' + $cwd + '):')
 if ($adviceLine -ne '') { [void]$lines.Add($adviceLine) }
 if ($missing.Count -gt 0) { [void]$lines.Add('Added ' + $missing.Count + ' .gitignore patterns: ' + ($missing -join ', ')) }
-if ($tracked.Count -gt 0) { [void]$lines.Add('TRACKED: ' + (($tracked | Sort-Object -Unique) -join ', ')) }
-if ($staged.Count -gt 0) { [void]$lines.Add('STAGED: ' + (($staged | Sort-Object -Unique) -join ', ')) }
-[void]$lines.Add('Review ignores.')
+if ($tracked.Count -gt 0) { [void]$lines.Add('TRACKED, preserve/untrack: ' + (($tracked | Sort-Object -Unique) -join ', ')) }
+if ($staged.Count -gt 0) { [void]$lines.Add('STAGED, index only: ' + (($staged | Sort-Object -Unique) -join ', ')) }
+[void]$lines.Add('Review ignores, preserve files.')
 $reason = $lines.ToArray() -join "`n"
 if ($GitPrePush) {
     exit (Write-NativeFinding -HookName Ignore-Rules-Check -Message $reason -ProjectRoot $cwd)

@@ -106,8 +106,8 @@ function Get-InstallAdvisories {
             $head = 'INSTALL LOCATION: ' + $finding.Family + ' would install ' + $finding.Package + ' into ' + ($onDrive.ToArray() -join ' and ') + ' on ' + $drive + '. '
             if (-not [string]::IsNullOrEmpty($finding.Advice)) { [void]$lines.Add($head + $finding.Advice) }
             elseif ($stale.Count -gt 0) {
-                [void]$lines.Add($head + 'User chose a location: set ' + (($stale | ForEach-Object { '`' + $_ + '`' }) -join ' and ') +
-                    ' in-command (user env newer than shell); no path question; ' +
+                [void]$lines.Add($head + 'The user already chose a location: set ' + (($stale | ForEach-Object { '`' + $_ + '`' }) -join ' and ') +
+                    ' in-command: user env newer than shell; no path question; ' +
                     'verify where it landed. Rule: global-environment-rules.md -> Install Locations.')
             }
             else {

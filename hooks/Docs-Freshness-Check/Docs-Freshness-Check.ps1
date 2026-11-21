@@ -423,7 +423,7 @@ function Get-ReviewRequestLines {
     # documented workflow boundaries - the doc-impact areas the UTF-8 hook and
     # ::deep-debug work introduced. Detection stays generic (any real non-doc
     # change); pure internal changes still clear with -Result NoUpdate.
-    [void]$lines.Add('BEFORE review: global-hook-rules.md Hook Change Gate/global-repository-rules.md README FULL.')
+    [void]$lines.Add('BEFORE review: global-hook-rules.md Hook Change Gate/global-repository-rules.md README FULL, all affected contracts.')
     [void]$lines.Add('Update task-stale tracked public .md/.txt ONLY; no unrelated edits.')
     [void]$lines.Add('Clear with one acknowledgement: ' + $ackCommand + ' (nothing stale: -Result NoUpdate -Reason "<why no doc became inaccurate>").')
     return $lines.ToArray()

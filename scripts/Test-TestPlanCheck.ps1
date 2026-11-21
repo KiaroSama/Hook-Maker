@@ -571,17 +571,17 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     # Detailed regression/bounds/resources/cleanup/Ponytail/encoding requirements
     # now route through mandatory full owners; this hook does not verify compliance.
     Check 'dd: persistent regression and original failure paths route to the full workflow' (
-        $msgDd -match '::deep-debug: persistent regression/real fixture for confirmed defects; rerun original/important failures') $msgDd
+        $msgDd -match '::deep-debug: regression/real fixture per defect; rerun failures') $msgDd
     Check 'dd: native and outer limits route to complete test/environment owners' (
         $msgDd -match 'global-test-rules\.md FULL') $msgDd
     Check 'dd: bounded waits and one shared worker ceiling retain their full owner' (
         $msgDd -match 'global-test-rules\.md FULL' -and
-        $msgDd -match '::deep-debug: persistent regression/real fixture for confirmed defects; rerun original/important failures') $msgDd
+        $msgDd -match '::deep-debug: regression/real fixture per defect; rerun failures') $msgDd
     Check 'dd: cleanup, property invariants and confirmed security findings retain their full workflow' (
-        $msgDd -match '::deep-debug: persistent regression/real fixture for confirmed defects; rerun original/important failures' -and
+        $msgDd -match '::deep-debug: regression/real fixture per defect; rerun failures' -and
         $msgDd -match 'Hook runs/edits nothing') $msgDd
     Check 'dd: one terminal Ponytail pass routes to the full workflow before work' (
-        $msgDd -match '::deep-debug: persistent regression/real fixture for confirmed defects; rerun original/important failures') $msgDd
+        $msgDd -match '::deep-debug: regression/real fixture per defect; rerun failures') $msgDd
     Check 'dd: encoding owner and every Test-*.ps1 CI mapping remain required' (
         $msgDd -match 'global-test-rules\.md FULL' -and
         $msgDd -match 'every Test-\*\.ps1 -> CI') $msgDd

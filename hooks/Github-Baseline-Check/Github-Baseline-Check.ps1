@@ -139,7 +139,7 @@ $securityPath = Join-Path $env:LOCALAPPDATA ('HookMaker/state/GithubBaselineChec
 $securitySeen = ''
 try { if (Test-Path -LiteralPath $securityPath -PathType Leaf) { $securitySeen = [IO.File]::ReadAllText($securityPath, [Text.Encoding]::UTF8) } } catch { }
 if ($securitySeen -cne $securityKey) {
-    $message = 'SECURITY: global-github-automation-rules.md Sec12 FULL first (owner/visibility/plan). Public: CodeQL/Socket/Semgrep/CodeRabbit; private: Socket/Semgrep; keep existing. Latest!=stale/skip; all-bot disposition; no duplicates/auto-merge; free-first/consent. Info-only: hook executes nothing.'
+    $message = 'SECURITY: global-github-automation-rules.md Sec12 FULL first: owner/visibility/support/plan. Public CodeQL/Socket/Semgrep/CodeRabbit; private Socket/Semgrep; preserve existing. Graph/alerts/malware/update PRs distinct. Latest execution!=rate-limit/stale/skip. All-bot disposition; CodeRabbit uncovered head only; no duplicates/auto-merge. Free-first/shared quotas/financial consent/privacy. Verified private action links for blockers. Info-only: no actions; hook executes nothing.'
     $badgeNote += "`n" + $message
     try { [void][IO.Directory]::CreateDirectory((Split-Path -Parent $securityPath)); [IO.File]::WriteAllText($securityPath, $securityKey, [Text.UTF8Encoding]::new($false)) } catch { }
 }

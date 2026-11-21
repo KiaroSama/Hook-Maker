@@ -81,7 +81,7 @@ $missesMarkdown = Test-GraphMissesMarkdown -Root $cwd
 # Reminder for the graph-EXISTS case (read the graph; do not re-browse the tree).
 $haveGraphNote = @(
     'Graph-Read-Check: advisory graphify-out/graph.json; broad architecture/call/impact questions: scoped graph first.',
-    '- graphify query "<q>", path "<A>" "<B>", or explain "<concept>".',
+    '- graphify query "<q>", graphify path "<A>" "<B>", graphify explain "<c>".',
     '- Source-confirm; small/docs/config/secret fixes exempt.',
     'CMM code / Graphify docs-cross-cut; covered changes: graphify update .'
 ) -join "`n"

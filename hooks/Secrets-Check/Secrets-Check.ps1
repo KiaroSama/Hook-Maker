@@ -315,8 +315,8 @@ if ($null -ne (Get-Command git -ErrorAction SilentlyContinue)) {
 if ($added.Count -gt 0 -and $inGitRepo) {
     $null = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'check-ignore', '-q', '--', 'secrets.md')
     if ($LASTEXITCODE -ne 0) {
-        [void]$critical.Add('Registry unignored; not writing ' + $added.Count +
-            ' values; ignore it, retry.')
+        [void]$critical.Add('Registry unignored; no write of ' + $added.Count +
+            ' values; ignore registry/retry.')
         # Same degradation as the write-failure path below: name the keys in the
         # report, put no value on disk.
         [void]$missingUndocumented.AddRange($added)
@@ -394,7 +394,7 @@ function Get-OutgoingCommits {
         if ($remoteSha -eq $allZero) {
             $revs = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-list', $localSha, '--not', '--remotes') | Where-Object { $_ })
             if ($LASTEXITCODE -ne 0) {
-                [void]$errors.Add('new ref ' + $localRef + ' rev-list failed; UNKNOWN')
+                [void]$errors.Add('new ref ' + $localRef + ' rev-list failed; outgoing UNKNOWN')
                 continue
             }
         }
@@ -405,12 +405,12 @@ function Get-OutgoingCommits {
             $null = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-parse', '--verify', '--quiet', ($remoteSha + '^{commit}'))
             if ($LASTEXITCODE -ne 0) {
                 $shortRemote = if ($remoteSha.Length -gt 7) { $remoteSha.Substring(0, 7) } else { $remoteSha }
-                [void]$errors.Add('ref ' + $localRef + ' - remote commit ' + $shortRemote + ' unresolved; UNKNOWN')
+                [void]$errors.Add('ref ' + $localRef + ' - remote commit ' + $shortRemote + ' unresolved; outgoing UNKNOWN')
                 continue
             }
             $revs = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-list', ($remoteSha + '..' + $localSha)) | Where-Object { $_ })
             if ($LASTEXITCODE -ne 0) {
-                [void]$errors.Add('ref ' + $localRef + ' rev-list failed; UNKNOWN')
+                [void]$errors.Add('ref ' + $localRef + ' rev-list failed; outgoing UNKNOWN')
                 continue
             }
         }
@@ -559,7 +559,7 @@ if ($inGitRepo) {
         [void]$critical.Add('Outgoing coverage UNKNOWN: ' + $resolveError + '.')
     }
     if ($outgoingScanFailedClosed) {
-        [void]$critical.Add('Outgoing grep failed; push refused.')
+        [void]$critical.Add('Outgoing grep failed; push refused, UNKNOWN.')
     }
 }
 
@@ -663,7 +663,7 @@ if ($placeholders.Count -gt 0) {
     [void]$lines.Add('Empty placeholder: ' + ($placeholders.ToArray() -join ', '))
 }
 if ($unused.Count -gt 0) {
-    [void]$lines.Add('Registry-only: ' + ($unused.ToArray() -join ', '))
+    [void]$lines.Add('Registry-only, user decision: ' + ($unused.ToArray() -join ', '))
 }
 if ($needsClassification.Count -gt 0) {
     # NAME THE FILE. "in .env" sent operators to the PROJECT's .env - the file
@@ -671,12 +671,12 @@ if ($needsClassification.Count -gt 0) {
     # with nothing to tell them why. The config .env is this hook's own, beside
     # the installed script; it is inside the client config directory, which the
     # scan excludes, so it can never be mistaken for scanned input.
-    [void]$lines.Add('UNKNOWN, unregistered/advisory: ' + ($needsClassification.ToArray() -join ', ') + '. SECRET_KEYS/PUBLIC_CONFIG_KEYS in hook .env: ' + (Join-Path $PSScriptRoot '.env') + ', not project .env.')
+    [void]$lines.Add('UNKNOWN, unregistered/advisory: ' + ($needsClassification.ToArray() -join ', ') + '. SECRET_KEYS/PUBLIC_CONFIG_KEYS in hook .env: ' + (Join-Path $PSScriptRoot '.env') + ', not project .env; create, update preserves.')
 }
 if ($removedPublicConfigKeys.Count -gt 0) {
-    [void]$lines.Add('Removed ' + $removedPublicConfigKeys.Count + ' registry entr' + $(if ($removedPublicConfigKeys.Count -eq 1) { 'y' } else { 'ies' }) + ' public: ' + ($removedPublicConfigKeys -join ', ') + '.')
+    [void]$lines.Add('Removed ' + $removedPublicConfigKeys.Count + ' generated registry entr' + $(if ($removedPublicConfigKeys.Count -eq 1) { 'y' } else { 'ies' }) + ' classified public: ' + ($removedPublicConfigKeys -join ', ') + '.')
 }
-[void]$lines.Add('No values shown; rotate leaks.')
+[void]$lines.Add('No value output/Git; rotate leaks, user removal.')
 $message = $lines.ToArray() -join "`n"
 
 if ($GitPrePush) {

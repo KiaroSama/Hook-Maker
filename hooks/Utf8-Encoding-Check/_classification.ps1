@@ -217,7 +217,7 @@ function Get-Utf8Exceptions {
     $valid = New-Object System.Collections.Generic.List[object]
     $relSetting = $exceptionFileSetting.Replace('\', '/')
     if ([System.IO.Path]::IsPathRooted($exceptionFileSetting) -or $relSetting -match '(^|/)\.\.(/|$)') {
-        [void]$configWarnings.Add('UTF8_EXCEPTION_FILE not relative.')
+        [void]$configWarnings.Add('UTF8_EXCEPTION_FILE not relative, rejected.')
         return $valid.ToArray()
     }
     $fullPath = ''
@@ -231,12 +231,12 @@ function Get-Utf8Exceptions {
     # from streamed text so the new catalog default cannot grow registry memory.
     $read = Read-FileBytesBounded -Path $fullPath -MaxFullBytes ([Math]::Min([int64]1MB, $maxFileBytes))
     if ($read.Failed -or $read.Truncated) {
-        [void]$configWarnings.Add('exceptions ' + $exceptionFileSetting + ' unreadable, rejected.')
+        [void]$configWarnings.Add('exceptions ' + $exceptionFileSetting + ' unreadable, all rejected.')
         return $valid.ToArray()
     }
     $registryClass = Get-Utf8Classification -Bytes $read.Bytes
     if ($registryClass -ne 'utf8' -and $registryClass -ne 'utf8bom') {
-        [void]$configWarnings.Add('exceptions ' + $exceptionFileSetting + ' invalid UTF-8 (' + $registryClass + '), rejected.')
+        [void]$configWarnings.Add('exceptions ' + $exceptionFileSetting + ' invalid UTF-8 (' + $registryClass + '), all rejected.')
         return $valid.ToArray()
     }
     $payloadOffset = 0
@@ -244,12 +244,12 @@ function Get-Utf8Exceptions {
     $doc = $null
     try { $doc = ([System.Text.Encoding]::UTF8.GetString($read.Bytes, $payloadOffset, $read.Bytes.Length - $payloadOffset)) | ConvertFrom-Json } catch { $doc = $null }
     if ($null -eq $doc) {
-        [void]$configWarnings.Add('exceptions ' + $exceptionFileSetting + ' invalid JSON, rejected.')
+        [void]$configWarnings.Add('exceptions ' + $exceptionFileSetting + ' invalid JSON, all rejected.')
         return $valid.ToArray()
     }
     $version = Get-Field $doc 'version'
     if ([string]$version -ne '1') {
-        [void]$configWarnings.Add('exceptions ' + $exceptionFileSetting + ' version!=1, rejected.')
+        [void]$configWarnings.Add('exceptions ' + $exceptionFileSetting + ' version!=1, all rejected.')
         return $valid.ToArray()
     }
     $index = 0

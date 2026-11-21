@@ -176,7 +176,7 @@ if ($eventName -eq 'SessionStart') {
     $carry = Get-CarryoverText $hookInput
     $note = @(
         'Mcp-Usage-Check: advisory connector review:',
-        '- BEFORE selection: global-mcp-rules.md/global-mcp-server-contracts.md FULL; live docs/GitHub -> .ai/RESEARCH/.',
+        '- BEFORE selection: global-mcp-rules.md/global-mcp-server-contracts.md FULL; research owner FULL, live docs/GitHub -> .ai/RESEARCH/.',
         '- Smallest verifying connector; no fit: proceed/explain none.',
         $requirement
     ) -join "`n"

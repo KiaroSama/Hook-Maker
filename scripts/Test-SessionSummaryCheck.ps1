@@ -346,9 +346,9 @@ try {
     Check 'summary: parses under Windows PowerShell 5.1' (([string]$parse).Trim() -eq 'OK') ([string]$parse)
     $r51 = Invoke-SummaryHook -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = 'summary-host51' } -Exe 'powershell.exe'
     Check 'summary: Windows PowerShell 5.1 emits the same open-work classification' (
-        $r51.Exit -eq 0 -and $r51.Out -match 'DONE: completed work/checks/resolved gates with observed proof' -and
-        $r51.Out -match 'REMAINING: unfinished required items, current blockers, deferred scope or untested required paths with reasons' -and
-        $r51.Out -match 'History alone proves no open gate') $r51.Out
+        $r51.Exit -eq 0 -and $r51.Out -match 'DONE: verified work/checks/gates' -and
+        $r51.Out -match 'REMAINING: open required items/blockers/untested paths with reasons' -and
+        $r51.Out -match 'History != open gate') $r51.Out
 
     # The hook is shipped source: it must stay pure ASCII, like every other
     # hook in this set (Persian is carried as \uXXXX escapes and decoded at

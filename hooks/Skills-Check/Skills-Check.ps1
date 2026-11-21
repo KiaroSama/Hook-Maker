@@ -531,16 +531,17 @@ if ($eventName -eq 'UserPromptSubmit') {
         }
 
         $dd = New-Object System.Collections.Generic.List[string]
-        [void]$dd.Add('SKILL POLICY CHECK (' + $client + '): ::deep-debug; exact loadable SKILL.md key, no mutation.')
-        [void]$dd.Add('- WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md FULL; ledger bugs/phases first.')
-        [void]$dd.Add('- ::multi-agent: dispatching-parallel-agents (discovery) or subagent-driven-development (prepared); no nested agents.')
-        [void]$dd.Add('- audit-context-building: architecture/security; brainstorming: ambiguity; writing-plans: unplanned repair.')
-        [void]$dd.Add('- Bug: systematic-debugging/test-driven-development/verification-before-completion; runtime: DAP or debug-live.')
-        [void]$dd.Add('- Plan: executing-plans, test-driven-development, requesting-code-review, verification-before-completion.')
-        [void]$dd.Add('- Security: differential-review/insecure-defaults/semgrep/codeql/sarif/fp-check/variant-analysis/supply-chain/c-review/rust-review; active needs consent/scope.')
-        [void]$dd.Add('- property-based-testing: real invariants only. ' + $ponytailRef + ' ONCE; safe cuts/proof only.')
+        [void]$dd.Add('SKILL POLICY CHECK (' + $client + '): ::deep-debug; exact loadable SKILL.md key/exposure, no mutation.')
+        [void]$dd.Add('- EVERY bug/phase: WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md FULL.')
+        [void]$dd.Add('- Ledger bugs/phases first; ::multi-agent codeword. dispatching-parallel-agents: independent discovery; subagent-driven-development: prepared tasks. Flatten/dedup/cycle-check once, no nested/recursive agents.')
+        [void]$dd.Add('- audit-context-building: substantial/unfamiliar/architecture/security; Graphify policy. brainstorming: real design ambiguity; writing-plans: complex repair lacking plan.')
+        [void]$dd.Add('- Bug: systematic-debugging/test-driven-development/verification-before-completion; runtime question: local DAP/debugger OR trusted debug-live DebugMCP/VS Code.')
+        [void]$dd.Add('- Real plan: executing-plans, test-driven-development, requesting-code-review, verification-before-completion.')
+        [void]$dd.Add('- Security subset by job: differential-review/insecure-defaults/review/verification; semgrep/codeql, SARIF parser if output exists; fp-check before confirmation, variant-analysis after proven cause, supply-chain auditor for deps, c-review C/C++, rust-review Rust. static-analysis is label unless exact installed name:. Active testing needs ownership/consent/scope.')
+        [void]$dd.Add('- property-based-testing: real round-trip/validator/state/path/idempotency/boundary invariant only, never usage padding.')
+        [void]$dd.Add('- ' + $ponytailRef + ' ONCE; then safe cuts/targeted tests/final proof only.')
         if ($notVisible.Count -gt 0) {
-            [void]$dd.Add('- NOT VISIBLE: ' + ($notVisible.ToArray() -join ', ') + '. Verify elsewhere; gap=BLOCKED/PARTIAL.')
+            [void]$dd.Add('- NOT VISIBLE (project/global/plugin): ' + ($notVisible.ToArray() -join ', ') + '. Verify elsewhere; required gap=BLOCKED/PARTIAL.')
         }
         [void]$dd.Add('- Subset/client syntax only; hook invokes nothing.')
         [void]$dd.Add($script:SkillsRequirement)
