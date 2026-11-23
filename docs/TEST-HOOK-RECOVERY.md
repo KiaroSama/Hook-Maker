@@ -1,5 +1,11 @@
 # Test-hook identity and historical recovery
 
+## Before replaying a failed test
+
+A repeated notice does not mean a new test ran. An unchanged completed failure stays `UNRESOLVED`; the hook can show a notice without starting another assistant turn. [Read how repeat delivery works](#completed-failure-repeat-delivery).
+
+Use the [historical recovery procedure](#bounded-historical-processing-and-audited-observation-accounting) only when the original evidence still matches the audited record. It cannot replace a missing receipt or prove the current tree passed. The [legacy identity procedure](#exact-legacy-missing-identity-compatibility) needs fresh approval of the exact request hash.
+
 ## Durable guarded receipts
 
 Every terminal guarded run publishes UTF-8 schema-2 evidence at the canonical
@@ -66,18 +72,11 @@ The observer reports the unsupported identity instead of creating an impossible
 observation or borrowing another run's successful result. Existing failure,
 freshness, incomplete-run and process-cleanup checks still apply.
 
-Historical incidents normally resolve through exact newer clean evidence, and
-since 2026-09-20 that covers strictly more than it used to: supersession matches on
-the COMMAND and no longer requires the later clean receipt to carry the same
-project fingerprint. A failure therefore clears when you fix it and re-run the same
-command green, even though the fix changed the working tree, and a receipt written
-without a fingerprint at all is no longer permanently unclearable. See
-`docs/adr/0001-supersede-by-project-not-tree-state.md`.
+A newer clean receipt can clear a recorded failure for the same complete command even if the fix changed the project fingerprint. This also applies when the old failure receipt lacks a fingerprint. See [how receipts supersede recorded failures](adr/0001-supersede-by-project-not-tree-state.md).
 
-Since 2026-09-29 an observation that never received its receipt - a guarded run started
+An observation that never received its receipt, for example a guarded run started
 without the full identity the hook printed (`-RunId`, `-ProjectFingerprint`, `-ResultPath`),
-or a run killed before it could write one - no longer blocks for ever: it is superseded by a
-LATER guarded run of the same command in the same project state that is paired to its own
+or a run killed before it could write one, is superseded by a later guarded run of the same command in the same project state that is paired to its own
 observation, finished ok and left no process behind. A run observed at the same moment
 (started together), an older run, a failed or leaking run, an unpaired run, or a run of a
 different command never clears it. The practical rule: never hand-type the guarded runner
@@ -85,12 +84,12 @@ command, and never append a pipe or redirection to it; run exactly the replaceme
 `Test-Run-Guard` prints, because that is the one carrying the identity a later receipt can
 pair with.
 
-Since 2026-10-05 supported literal guarded calls with missing/blank/unusable/stale
+Supported literal guarded calls with missing, blank, unusable or stale
 `-ProjectFingerprint` refuse at PreToolUse before observation. The printed correction
 changes only that binding and preserves caller options. A foreign literal working
 directory requires that project's session context; dynamic syntax gets advice without
 a guessed observation. Standalone callers also must supply a nonempty fingerprint,
-or the runner exits3 before child/capture/evidence. This prevents NEW mismatches;
+or the runner exits with code 3 before child/capture/evidence. This prevents NEW mismatches;
 it does not fill historical fields. A fresh health command can supersede only the
 same complete health command under the rules above, never a separate mutation
 acceptance command. Repeating live create/delete acceptance requires fresh explicit

@@ -1,8 +1,5 @@
-# Offline suite: the hook reference (docs\HOOKS.md, docs\HOOKS-FA.md) and the
-# README hook counts agree with the installer's own metadata. The docs are the
-# per-hook behaviour contract and changed in almost every round, and nothing
-# checked them: the Persian Ai-Memory-Load entry lost its events and both
-# READMEs kept an old hook count for weeks.
+# Check the bilingual hook tables, event lists, shipped counts and README badges.
+# Read the installer metadata without running the wizard.
 #
 # Layout checked: a summary table (first cell a link to the hook's section) and
 # one `## `<Hook>`` section per hook whose first line states when it runs.
@@ -40,13 +37,16 @@ $hookDirs = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'hooks') -Director
 function Read-HookReference {
     param([string]$Path)
     $lines = @([System.IO.File]::ReadAllLines($Path, [System.Text.Encoding]::UTF8))
-    $tableRuns = [ordered]@{}; $sectionRuns = [ordered]@{}; $dupes = @()
+    $tableRuns = [ordered]@{}; $sectionRuns = [ordered]@{}; $dupes = @(); $badAnchors = @()
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]
         $row = [regex]::Match($line, '^\| \[`([^`]+)`\]\(#([^)]+)\) \| ([^|]+) \|')
         if ($row.Success) {
-            if ($tableRuns.Contains($row.Groups[1].Value)) { $dupes += $row.Groups[1].Value }
-            $tableRuns[$row.Groups[1].Value] = $row.Groups[3].Value.Trim()
+            $name = $row.Groups[1].Value
+            if ($tableRuns.Contains($name)) { $dupes += $name }
+            $tableRuns[$name] = $row.Groups[3].Value.Trim()
+            $anchor = ($name -replace '[^A-Za-z0-9_-]', '').ToLowerInvariant()
+            if ($row.Groups[2].Value -cne $anchor) { $badAnchors += $name }
             continue
         }
         $head = [regex]::Match($line, '^## `([^`]+)`\s*$')
@@ -58,7 +58,7 @@ function Read-HookReference {
             $sectionRuns[$name] = $(if ($j -lt $lines.Count) { $lines[$j] } else { '' })
         }
     }
-    return [pscustomobject]@{ Table = $tableRuns; Sections = $sectionRuns; Duplicates = @($dupes) }
+    return [pscustomobject]@{ Table = $tableRuns; Sections = $sectionRuns; Duplicates = @($dupes); BadAnchors = @($badAnchors) }
 }
 function Get-SetDifference { param($A, $B) return @(@($A | Where-Object { @($B) -notcontains $_ }) + @($B | Where-Object { @($A) -notcontains $_ } | ForEach-Object { '+' + $_ })) }
 
@@ -73,6 +73,7 @@ foreach ($doc in @(@('EN', $en), @('FA', $fa))) {
     $d = @(Get-SetDifference @($ref.Table.Keys) @($ref.Sections.Keys))
     Check ($label + ': the summary table lists exactly the sectioned hooks') ($d.Count -eq 0) ($d -join ', ')
     Check ($label + ': no hook appears twice') ($ref.Duplicates.Count -eq 0) ($ref.Duplicates -join ', ')
+    Check ($label + ': table links match their hook headings') ($ref.BadAnchors.Count -eq 0) ($ref.BadAnchors -join ', ')
     $d = @(Get-SetDifference @($script:HookMeta.Keys) @($ref.Sections.Keys | Where-Object { $_ -ne $engine }))
     Check ($label + ': every installer metadata entry has a section, and nothing else does') ($d.Count -eq 0) ($d -join ', ')
 }
@@ -90,18 +91,54 @@ foreach ($name in @($script:HookMeta.Keys | Sort-Object)) {
 }
 
 Write-Host '--- README hook counts ---' -ForegroundColor Cyan
-$count = $script:HookMeta.Count
-$readme = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'README.md'), [System.Text.Encoding]::UTF8)
-$m = [regex]::Match($readme, '(?m)^(\d+) hooks ship with Hook Maker')
-Check ('README.md states ' + $count + ' hooks') ($m.Success -and [int]$m.Groups[1].Value -eq $count) $(if ($m.Success) { $m.Value } else { 'no count line' })
-# Persian digits and the word "hook", built from code points so this file stays ASCII.
-$faDigits = -join (0..9 | ForEach-Object { [char](0x06F0 + $_) })
+$packageCount = $script:HookMeta.Count
+$count = $hookDirs.Count
+Check 'shipped count includes exactly one engine outside installer package metadata' ($hookDirs -contains $engine -and $count -eq ($packageCount + 1))
+$utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+$readme = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'README.md'), $utf8)
+$readmeFa = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'README-FA.md'), $utf8)
+$m = [regex]::Match($readme, '(?m)^([0-9]+) hooks ship with Hook Maker: ([0-9]+) custom hook packages')
+Check "README.md states $count hooks and $packageCount packages" ($m.Success -and $m.Groups[1].Value -ceq "$count" -and $m.Groups[2].Value -ceq "$packageCount") $m.Value
+
+# Normalize only the Persian prose count; the badge URLs use ASCII in both files.
+$rtlPrefix = -join ([char]0x200F, [char]0x2067)
+$faDigits = '[' + [char]0x06F0 + '-' + [char]0x06F9 + ']+'
 $faHook = -join ([char]0x0647, [char]0x0648, [char]0x06A9)
-$readmeFa = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'README-FA.md'), [System.Text.Encoding]::UTF8)
-$m = [regex]::Match($readmeFa, '(?m)^([' + $faDigits + ']+) ' + $faHook + ' ')
-$faCount = -1
-if ($m.Success) { $faCount = [int](-join ($m.Groups[1].Value.ToCharArray() | ForEach-Object { [string]([int]$_ - 0x06F0) })) }
-Check ('README-FA.md states ' + $count + ' hooks (Persian digits)') ($faCount -eq $count) ('found ' + $faCount)
+$faPackage = -join ([char]0x0628, [char]0x0633, [char]0x062A, [char]0x0647, [char]0x0654)
+$faCountLine = [regex]::Match($readmeFa, ('(?m)^' + $rtlPrefix + '(' + $faDigits + ') ' + $faHook + ' [^\r\n:]+: (' + $faDigits + ') ' + $faPackage))
+$faCounts = @(foreach ($group in @($faCountLine.Groups[1], $faCountLine.Groups[2])) {
+    -join ($group.Value.ToCharArray() | ForEach-Object { [string]([int]$_ - 0x06F0) })
+})
+Check "README-FA.md states $count hooks and $packageCount packages" ($faCountLine.Success -and $faCounts[0] -ceq "$count" -and $faCounts[1] -ceq "$packageCount") $faCountLine.Value
+
+Write-Host '--- bilingual README badges ---' -ForegroundColor Cyan
+$badgePattern = '(?m)^\[!\[(?<alt>[^\]\r\n]+)\]\(https://img\.shields\.io/badge/(?<label>[A-Za-z0-9.%]+)-(?<value>[A-Za-z0-9.%]+)-(?<color>[0-9a-f]{6})\)\]\((?<target>[^()\s]+)\)\r?$'
+$blocks = @(foreach ($doc in @(@('README.md', $readme), @('README-FA.md', $readmeFa))) {
+    $name = $doc[0]; $text = $doc[1]
+    $block = [regex]::Matches($text, '(?ms)^<div align="center">\r?\n\r?\n(.*?)\r?\n\r?\n</div>\r?$')
+    $rows = @()
+    if ($block.Count -eq 1) { $rows = @([regex]::Matches($block[0].Groups[1].Value, $badgePattern)) }
+    $shieldImages = [regex]::Matches($text, 'https?://img\.shields\.io/').Count
+    Check "$name has one centered block with 12 to 16 static badges" ($block.Count -eq 1 -and $rows.Count -ge 12 -and $rows.Count -le 16 -and $rows.Count -eq $shieldImages) "valid rows: $($rows.Count), Shields URLs: $shieldImages"
+    $colors = @($rows | ForEach-Object { $_.Groups['color'].Value })
+    Check "$name badge colors are distinct" ($colors.Count -eq @($colors | Sort-Object -Unique).Count)
+    $required = @($rows | Where-Object { $_.Groups['color'].Value -in '8b5cf6', '0891b2', 'ca8a04', 'd04a9a' } | ForEach-Object { $_.Groups['label'].Value + '-' + $_.Groups['color'].Value })
+    Check "$name orders the four required badges" (($required -join ',') -ceq 'PowerShell-8b5cf6,platform-0891b2,repo%20size-ca8a04,Support-d04a9a')
+    $hookBadges = @($rows | Where-Object { $_.Groups['label'].Value -ceq 'hooks' })
+    Check "$name badge states $count shipped hooks" ($hookBadges.Count -eq 1 -and $hookBadges[0].Groups['value'].Value -ceq ("$count" + '%20shipped'))
+    foreach ($row in $rows) {
+        $target = $row.Groups['target'].Value
+        if ($target -ceq '#donate') {
+            $ok = $row.Groups['label'].Value -ceq 'Support' -and $row.Groups['value'].Value -ceq 'donations' -and $row.Groups['color'].Value -ceq 'd04a9a' -and $row.Index -eq $rows[-1].Index -and $text -cmatch '(?m)^(?:## Donate|<a name="donate"></a>)\r?$'
+        }
+        else {
+            $ok = $row.Groups['label'].Value -cne 'Support' -and $target -cmatch '^(?:\.?[A-Za-z0-9_-][A-Za-z0-9_.-]*/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*$' -and (Test-Path -LiteralPath (Join-Path $RepoRoot $target) -PathType Leaf)
+        }
+        Check "$name badge points to a file or the final donation anchor" $ok $target
+    }
+    ($rows | ForEach-Object { $_.Value.TrimEnd("`r") }) -join "`n"
+})
+Check 'README badge rows match in both languages' ($blocks.Count -eq 2 -and $blocks[0] -ceq $blocks[1])
 
 Write-Host ''
 Write-Host ('Passed: ' + $script:Pass + '  Failed: ' + $script:Fail) -ForegroundColor $(if ($script:Fail -eq 0) { 'Green' } else { 'Red' })

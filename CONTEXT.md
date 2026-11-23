@@ -1,6 +1,6 @@
 # Context
 
-The shared language of this project. A glossary and nothing else — no implementation detail, no
+The shared language of this project. A glossary and nothing else; no implementation detail, no
 decisions (those are ADRs under `docs/adr/`), no task state (that lives outside the repository).
 
 ## Validated text
@@ -65,7 +65,7 @@ A command whose purpose is to **run a test suite**: `pytest`, `jest`, `vitest`, 
 `npm test`, this repository's own `Run-Tests.ps1` and its `Test-<Suite>.ps1` suites.
 
 Not to be confused with a **condition script** (below). `Test-` is an approved PowerShell verb
-meaning "evaluate a condition and return the result" — `Test-Path`, `Test-Connection`. A file named
+meaning "evaluate a condition and return the result"; `Test-Path`, `Test-Connection`. A file named
 `Test-<Noun>.ps1` is therefore ambiguous on its name alone, and this project contains both kinds.
 
 ## Condition script
@@ -83,8 +83,8 @@ and leaves no evidence.
 
 ## Receipt
 
-The result document a guarded run writes. It carries the run's identity — which command, which
-project, when, how it ended — and is the only thing a later reader knows about that run. A receipt
+The result document a guarded run writes. It carries the run's identity; which command, which
+project, when, how it ended; and is the only thing a later reader knows about that run. A receipt
 missing an identity field cannot be paired with anything.
 
 ## Project key
@@ -95,7 +95,7 @@ and does not change when the project's contents change.
 ## Project fingerprint
 
 The identifier of one exact **state** of a project's working tree. It changes whenever the tree
-changes — a commit, an edit, a staged file. It identifies a moment, never a project.
+changes; a commit, an edit, a staged file. It identifies a moment, never a project.
 
 ## Incident
 
@@ -113,7 +113,7 @@ the sibling decision about what "the same run" means.
 ## Superseded
 
 A failed run is superseded when the **same work has since been re-run clean**. "The same work" means
-the same command in the same project — deliberately not the same tree state, because fixing the
+the same command in the same project; deliberately not the same tree state, because fixing the
 failure necessarily changes the tree. See `docs/adr/0001-supersede-by-project-not-tree-state.md`.
 
 ## Generation
@@ -129,7 +129,7 @@ spans many turns.
 
 ## Terminal
 
-A generation is terminal when the finalization path has **recorded** that it ended — either it was
+A generation is terminal when the finalization path has **recorded** that it ended; either it was
 **finalized**, or it ended unverified and the outcome says so. An observed summary whose readiness
 was not verified does not by itself make the generation terminal. Terminality is written, never
 inferred: an old timestamp, a quiet store or a vanished process is not evidence that work finished.
@@ -147,7 +147,7 @@ controls what the client displays.
 Compacting eligible verified terminal generations into retained tombstones so new work can be recorded. It never removes a live
 generation, an unresolved finding or an unpublished receipt, whatever their age, and **age alone
 never makes anything collectable**. When the store is full and nothing is collectable, the refusal is
-explicit — evicting the oldest entry would discard an active correction chain and refund its
+explicit; evicting the oldest entry would discard an active correction chain and refund its
 allowance, which is the failure this rule exists to prevent.
 
 ## Tombstone
@@ -171,8 +171,7 @@ location option, the tool's own configured setting, or the tool's default.
 ## Physical path
 
 An install target after every junction and symbolic link on it, including links on its parent
-folders, has been followed to the folder that really holds the bytes. `C:\Users\me\.cache\huggingface`
-whose physical path is `H:\AI\.cache\huggingface` is an install target on `H:`, not on `C:`.
+folders, has been followed to the folder that holds the bytes. A path under the user profile can resolve to a different drive; the hook checks that resolved location.
 
 ## Exact-root approval
 

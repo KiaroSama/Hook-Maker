@@ -1,10 +1,10 @@
 # Research and operation reminders
 
-These additions extend existing hooks. They do not execute research, load skills, contact providers, approve accounts or delete graphs.
+These hooks remind the agent which research procedures and tools apply. The reminders do not run research, load skills, contact providers, approve accounts or delete graphs.
 
 ## Explicit research
 
-Start an actual prompt with `::deep-research` and its question. Rules-Check points to the bounded workflow; Skills-Check points to phase-specific research and connected-skill contracts plus current catalogue records. Native `/deep-research` remains native. Ordinary mentions, quoted/inline/fenced examples and pasted output wrappers do not activate the explicit route. Input is bounded to32768 characters; uncertain projection stays silent. Repeated unchanged requests are suppressed per delivery identity/client/project/request; changed requests receive fresh guidance.
+Start an actual prompt with `::deep-research` and its question. Rules-Check points to the bounded workflow; Skills-Check points to phase-specific research and connected-skill contracts plus current catalogue records. Native `/deep-research` remains native. Ordinary mentions, quoted/inline/fenced examples and pasted output wrappers do not activate the explicit route. Input is bounded to 32,768 characters; uncertain projection stays silent. Repeated unchanged requests are suppressed per delivery identity/client/project/request; changed requests receive fresh guidance.
 
 Guidance requires one question, finite page/call/time/cost limits, primary bodies, citation trails, independent origins, counterevidence, a claim ledger and honest gaps/stop reasons. A Gemini-backed namesake or extraction reference is not the native command; unavailable capabilities are reported, not simulated. No implicit swarm, paid job, monitor, install or publication.
 
@@ -32,7 +32,7 @@ Graph-Update-Check retains its existing freshness/cooldown/own-marker contract. 
 
 Offline Rules/Context/Graph regressions cover actual events, repeat/client/host isolation, near-misses, structured identity and untouched graph-like files. No live provider account operation is tested or authorized by these advisories. Installed rollout and actual runtime checks are separate from source CI. This reminder work does not certify CI-input noninterference or waive any historical carryover gate.
 
-## Ordered scope, release and UI guidance (V66/V67)
+## Ordered scope, release and UI guidance
 
 Rules/Spec Kit/Feature reminders preserve original request order and stable IDs, resume the earliest actionable unfinished item and reconcile all items at closure. Exact other-project authorization or an English Markdown owner handoff is required; sync groups do not authorize source/staging/runner/provider repair. A fallback recent feature is navigation, not ownership. Task-routed owners must be read in full; a new rule Markdown needs its direct registry entry and completeness check.
 
