@@ -33,7 +33,7 @@
     $r = Invoke-SummaryHook -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $rlProj; session_id = 'rl-1'; prompt = $rlFa } -AsClaude -KeepDelivered
     Check 'RL03 cooldown delivers the distinct language-only reminder once, without summary' (
         $r.Exit -eq 0 -and $r.Out.Contains($rlLine) -and $r.Out -match 'additionalContext' -and
-        $r.Out -notmatch 'one short DONE / REMAINING|"decision"') $r.Out
+        $r.Out -notmatch 'one brief wrap-up|"decision"') $r.Out
     $r = Invoke-SummaryHook -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $rlProj; session_id = 'rl-c'; prompt = $rlFa }
     Check 'RL02b the Codex shape carries it as additionalContext too' ($r.Out.Contains($rlLine) -and $r.Out -match 'additionalContext') $r.Out
     $r = Invoke-SummaryHook -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $rlProj; session_id = 'rl-1'; prompt = ('Base directory for this skill: C:\x ' + $rlFa) } -AsClaude -KeepDelivered

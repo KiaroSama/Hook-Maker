@@ -236,10 +236,21 @@ try {
     Set-Mock -RunJson '[{"databaseId":21,"name":"CI","workflowName":"CI","status":"in_progress","conclusion":null}]' -ExpectedSha $sha2
     $r = Fire -HookPath $CiHook -Cwd $ci2 -EventName 'Stop'
     Check 'pending checks -> advisory with wait guidance' ($r.Out -match '"systemMessage"' -and $r.Out -match 'queued/in-progress' -and $r.Out -match 'gh run list --commit')
+    Check 'pending CI keeps a watcher on all jobs for GitHub and local waits' (
+        $r.Out -match 'silent background watcher until ALL jobs finish' -and $r.Out -match 'no mid-wait updates' -and
+        $r.Out -match 'GitHub CI and local CI/test runs') $r.Out
     $r = Fire -HookPath $CiHook -Cwd $ci2 -EventName 'Stop'
-    Check 'unchanged pending evidence does not recursively reblock the same session' ($r.Out-eq''-and$r.Exit-eq0) $r.Out
+    Check 'unchanged pending evidence does not recursively reblock the same session' ($r.Out -eq '' -and $r.Exit -eq 0) ('exit=' + $r.Exit + ' stdout=' + $r.Out + ' stderr=' + $r.Err)
     $r = Fire -HookPath $CiHook -Cwd $ci2 -EventName 'Stop' -Extra @{ session_id = 'pending-fresh-session' }
     Check 'fresh session still blocks genuinely running checks during pending cooldown' ($r.Out -match '"systemMessage"' -and $r.Out -match 'queued/in-progress') $r.Out
+
+    # An invalid review record leaves real running jobs visible but unproven.
+    $unprovenHook = New-ConfiguredCiHookCopy @{}
+    [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $unprovenHook) '_ci-policy.json'), '{}', [Text.Encoding]::UTF8)
+    $r = Fire -HookPath $unprovenHook -Cwd $ci2 -EventName 'Stop' -Extra @{ session_id = 'pending-unproven-review' }
+    Check 'pending jobs still need a silent watcher when the workload is unproven' (
+        $r.Exit -eq 0 -and $r.Out -match 'Workload UNPROVEN' -and $r.Out -match 'silent background watcher until ALL jobs finish' -and
+        $r.Out -match 'GitHub CI and local CI/test runs' -and $r.Out -notmatch '"decision"') $r.Out
 
     # failure -> block with fix guidance; repeated -> cooldown silence
     $ci3 = New-GitRepo 'ci3'

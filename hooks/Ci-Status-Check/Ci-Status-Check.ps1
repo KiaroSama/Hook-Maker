@@ -408,8 +408,11 @@ $script:GhAuthProjectKey = Get-ShortHash ($cwd.ToLowerInvariant() + '|' + $repoS
 . (Join-Path $PSScriptRoot "_cistate.ps1")
 
 function Write-Block {
-    param([string]$Outcome, [string]$Reason)
+    param([string]$Outcome, [string]$Reason, [switch]$Watch)
     Save-State -Outcome $Outcome
+    if ($Watch) {
+        $Reason += ' Use a silent background watcher until ALL jobs finish (GitHub CI and local CI/test runs); no mid-wait updates.'
+    }
     $evidence = Get-Variable -Name snapshot -ValueOnly -ErrorAction SilentlyContinue
     $evidenceKey = $script:sha + '|' + $Outcome
     if ($null -ne $evidence) { $evidenceKey += '|' + [string](Get-Field $evidence 'Fingerprint') }
@@ -626,17 +629,17 @@ if ($snapshot.Runs.Count -eq 0 -and $snapshot.FailedRuns.Count -eq 0 -and $snaps
     }
     $missingExpectation=Get-CiWorkloadExpectation -ProjectRoot $cwd -RepoSlug $repoSlug -Sha $sha -Branch $branch
     if($null-eq$missingExpectation-and$script:CiWorkloadReason-ne''){Write-Block -Outcome 'unproven' -Reason ('no runs are registered yet; '+$script:CiWorkloadReason)}
-    Write-Block -Outcome 'pending' -Reason ('workflows; no runs are registered yet: ' + $sha7 + ' (' + $repoSlug + '). Check: gh run list --commit ' + $sha)
+    Write-Block -Outcome 'pending' -Watch -Reason ('workflows; no runs are registered yet: ' + $sha7 + ' (' + $repoSlug + '). Check: gh run list --commit ' + $sha)
 }
 
 $reviewReason = [string](Get-Field $snapshot 'WorkloadReason')
 if ($reviewReason -ne '' -and $snapshot.FailedRuns.Count -eq 0 -and $snapshot.InfraRuns.Count -eq 0 -and $snapshot.BillingRuns.Count -eq 0) {
-    Write-Block -Outcome 'unproven' -Reason ('' + $reviewReason)
+    Write-Block -Outcome 'unproven' -Watch:($snapshot.PendingRuns.Count -gt 0) -Reason ('' + $reviewReason)
 }
 if ($snapshot.PendingRuns.Count -gt 0) {
     # E-09 wording: a non-completed status covers queued AND in_progress (and any
     # other pre-terminal state) - none of them is ever green.
-    Write-Block -Outcome 'pending' -Reason ('' + $sha7 + '/' + $branch + ' (' + $repoSlug + '): ' + $snapshot.PendingRuns.Count + ' queued/in-progress: ' + ($snapshot.PendingRuns -join '; ') + '. Advisory; await SHA (gh run list --commit ' + $sha + ').')
+    Write-Block -Outcome 'pending' -Watch -Reason ('' + $sha7 + '/' + $branch + ' (' + $repoSlug + '): ' + $snapshot.PendingRuns.Count + ' queued/in-progress: ' + ($snapshot.PendingRuns -join '; ') + '. Advisory; await SHA (gh run list --commit ' + $sha + ').')
 }
 
 # ---- account billing / payment block: proven external, auto-recorded ----

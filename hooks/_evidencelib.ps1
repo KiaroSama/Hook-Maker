@@ -17,19 +17,30 @@
 # tokens people actually leave behind.
 $script:ClosingPlaceholders = @('tbd', 'todo', 'n/a', 'na', 'none yet', 'tbc', '...', '-', '--')
 
+# A second label inside a complete quote or inline code span is prose.
+function Test-AdditionalSummaryLabel {
+    param([string]$Text, [string]$LabelPattern = 'DONE|REMAINING')
+    $unquoted = $Text -replace '`[^`]*`|"[^"]*"|''[^'']*''|\u00ab[^\u00bb]*\u00bb', ' '
+    return ($unquoted -match ('(?<!\w)(?:' + $LabelPattern + ')(?:\*{1,2}|_{1,2})?[ \t]*:'))
+}
+
 # The content of one closing declaration, or $null when the label is absent.
 #
-# A transcript line break is the two-character \n ESCAPE as often as a real one,
-# so both start a line and both end one. A capture that ran past the escape
-# would swallow the rest of the answer and read a later sentence as the claim.
+# Legacy declaration readers accept escaped newlines. Summary evidence comes
+# from decoded assistant text; a literal escape is not a physical line break.
 function Get-ClosingDeclarationLine {
-    param([AllowEmptyString()][string]$Text, [Parameter(Mandatory = $true)][string]$LabelPattern)
+    param([AllowEmptyString()][string]$Text, [Parameter(Mandatory = $true)][string]$LabelPattern, [switch]$SummaryLabel)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
     $pattern = '^ {0,3}(?:[-*#]+[ \t]{0,4})?(?:\*\*)?' + $LabelPattern + '[ \t]*:(.*)$'
+    if ($SummaryLabel) {
+        $pattern = '^ {0,3}(?:[-+*#]+[ \t]+)?(?:\*{1,2}|_{1,2})?' + $LabelPattern + '(?:\*{1,2}|_{1,2})?[ \t]*(?::(.*)|$)$'
+    }
     $fenceChar = ''; $fenceLength = 0
-    foreach ($line in @($Text -split '(?:\r?\n|\\n)')) {
+    $lineBreak = if ($SummaryLabel) { '\r?\n' } else { '(?:\r?\n|\\n)' }
+    foreach ($raw in @($Text -split $lineBreak)) {
+        $line = if ($SummaryLabel) { $raw -replace '^[\u200f\u2067]+|\u2069[ \t]*$', '' } else { $raw }
         # Quoted examples and indented code are not the assistant's declaration.
-        if ($line -match '^[ \t]*>') { continue }
+        if ($line -match '^[ \t]*>' -or ($SummaryLabel -and $line -match '^(?: {4}|\t)')) { continue }
         if ($line -match '^ {0,3}(`{3,}|~{3,})(.*)$') {
             $marker = $matches[1]; $rest = $matches[2]
             if ($fenceChar -eq '') { $fenceChar = $marker.Substring(0, 1); $fenceLength = $marker.Length }
@@ -37,7 +48,11 @@ function Get-ClosingDeclarationLine {
             continue
         }
         if ($fenceChar -ne '') { continue }
-        if ($line -match $pattern) { return [string]$matches[1] }
+        if ($line -match $pattern) {
+            $value = [string]$matches[1]
+            if ($SummaryLabel -and (Test-AdditionalSummaryLabel -Text $value)) { continue }
+            return $value
+        }
     }
     return $null
 }

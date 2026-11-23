@@ -505,8 +505,8 @@ function Test-GenerationSummaryText {
     if ([string]::IsNullOrWhiteSpace($Text) -or $Text.Length -gt 1048576) { return $false }
     $done = '(?:DONE|\u0686\u06cc\s+\u0634\u062f|\u0627\u0646\u062c\u0627\u0645[\s\u200c-]*\u0634\u062f\u0647)'
     $remaining = '(?:REMAINING|\u0686\u06cc\s+\u0645\u0648\u0646\u062f|\u0628\u0627\u0642\u06cc[\s\u200c-]*\u0645\u0627\u0646\u062f\u0647)'
-    $prefix = '^ {0,3}(?:[-*#]+[ \t]*)?'
-    $suffix = '(?:[ \t]*\*{1,2})?[ \t]*(?::|[-\u2013\u2014]|$)[ \t]*(.*)$'
+    $prefix = '^ {0,3}(?:[-+*#]+[ \t]+)?(?:\*{1,2}|_{1,2})?'
+    $suffix = '(?:[ \t]*(?:\*{1,2}|_{1,2}))?[ \t]*(?::|[-\u2013\u2014]|$)[ \t]*(.*)$'
     $section = ''; $doneBody = $false; $remainingBody = $false
     $fence = ''; $fenceLength = 0
     foreach ($raw in @($Text -split '\r?\n')) {
@@ -519,12 +519,14 @@ function Test-GenerationSummaryText {
             continue
         }
         if ($fence -ne '') { continue }
-        if ($line -match ($prefix + $done + $suffix)) { $section = 'done'; $line = $Matches[1] }
+        $heading = $false
+        if ($line -match ($prefix + $done + $suffix)) { $heading = $true; $section = 'done'; $line = $Matches[1] }
         elseif ($line -match ($prefix + $remaining + $suffix)) {
             if ($section -eq '' -or -not $doneBody) { return $false }
-            $section = 'remaining'; $line = $Matches[1]
+            $heading = $true; $section = 'remaining'; $line = $Matches[1]
         }
-        $body = $line.Trim().Trim('*', '-', '#', ' ').Trim()
+        if ($heading -and (Test-AdditionalSummaryLabel -Text $line -LabelPattern ($done + '|' + $remaining))) { return $false }
+        $body = $line.Trim().Trim('*', '_', '-', '#', ' ').Trim()
         if ($body -eq '' -or $body -match '^(?:<[^>]*>|TBD|TODO|\.\.\.)$') { continue }
         if ($section -eq 'done') { $doneBody = $true }
         elseif ($section -eq 'remaining') { $remainingBody = $true }

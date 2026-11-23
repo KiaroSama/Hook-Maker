@@ -100,13 +100,21 @@ try {
     Write-Host ''
     Write-Host '--- UserPromptSubmit: once per session and language ---' -ForegroundColor Cyan
     $rFa = Fire -Cwd $p -EventName 'UserPromptSubmit' -SessionId 'u1' -Prompt $PersianPrompt
-    Check 'prompt: Persian -> Skill persian' ($rFa.Out -match 'VOICE: reply in Persian -> Skill `anthropic-skills:persian`') ($rFa.Out + $rFa.Err)
+    $faContext = ($rFa.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext
+    Check 'prompt: Persian -> Skill persian' ($faContext -match 'VOICE: reply in Persian -> Skill `anthropic-skills:persian`') ($rFa.Out + $rFa.Err)
+    foreach ($event in @(@('SessionStart', $rStart.Out), @('UserPromptSubmit', $rFa.Out))) {
+        $eventName, $text = $event
+        Check ('Persian guidance names direction, separate closing lines, English and font: ' + $eventName) (
+            $text -match 'RLM \(U\+200F\) \+ RLI \(U\+2067\)' -and $text -match 'before leading emoji or English' -and
+            $text -match 'PDI \(U\+2069\)' -and $text -match 'separate DONE: and REMAINING: paragraphs' -and
+            $text -match 'English-only lines plain LTR' -and $text -match 'no marks' -and $text -match 'Vazir \(Vazirmatn\)') $text
+    }
     $rFa2 = Fire -Cwd $p -EventName 'UserPromptSubmit' -SessionId 'u1' -Prompt $PersianPrompt
     Check 'prompt: the same language is not repeated in a session' ($rFa2.Exit -eq 0 -and $rFa2.Out -eq '') $rFa2.Out
     $rRu = Fire -Cwd $p -EventName 'UserPromptSubmit' -SessionId 'u1' -Prompt $RussianPrompt
-    Check 'prompt: a new language in the same session is named once' ($rRu.Out -match 'Russian -> Skill `anthropic-skills:great-russian`') $rRu.Out
+    Check 'prompt: a new language in the same session is named once' ((($rRu.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext) -match 'Russian -> Skill `anthropic-skills:great-russian`') $rRu.Out
     $rEn = Fire -Cwd $p -EventName 'UserPromptSubmit' -SessionId 'u2' -Prompt $EnglishPrompt
-    Check 'prompt: English -> humanizer' ($rEn.Out -match 'English -> Skill `humanizer:humanizer`') $rEn.Out
+    Check 'prompt: English -> humanizer' ((($rEn.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext) -match 'English -> Skill `humanizer:humanizer`') $rEn.Out
     $rOther = Fire -Cwd $p -EventName 'UserPromptSubmit' -SessionId 'u3' -Prompt $OtherPrompt
     Check 'prompt: an unmapped language is silent' ($rOther.Exit -eq 0 -and $rOther.Out -eq '') $rOther.Out
 

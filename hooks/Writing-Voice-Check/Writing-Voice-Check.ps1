@@ -55,9 +55,10 @@ function Get-VoiceLanguage {
     return ''
 }
 
+$note = 'Persian lines: prefix RLM (U+200F) + RLI (U+2067) before leading emoji or English; end with PDI (U+2069), including separate DONE: and REMAINING: paragraphs. Keep English-only lines plain LTR (no marks). Default font: Vazir (Vazirmatn).'
 # ---- SessionStart: the mapping, and a reload duty after compact/resume -------
 if ($eventName -eq 'SessionStart') {
-    $note = 'WRITING VOICE: match OUTPUT language (incl. comments/docstrings): Persian->`anthropic-skills:persian`, Russian->`anthropic-skills:great-russian`, English->`humanizer:humanizer` (global-writing-voice-rules.md FULL). Load first; Stop blocks missing.'
+    $note = 'WRITING VOICE (incl. comments/docstrings): Persian: `anthropic-skills:persian`; Russian: `anthropic-skills:great-russian`; English: `humanizer:humanizer`. Read global-writing-voice-rules.md FULL; load first, Stop blocks missing. ' + $note
     $source = [string](Get-Field $hookInput 'source')
     if ($source -in @('compact', 'resume')) { $note += ' Session ' + $(if ($source -eq 'compact') { 'compacted' } else { 'resumed' }) + ': reload voice skill now.' }
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
@@ -78,7 +79,9 @@ if ($eventName -eq 'UserPromptSubmit') {
     try { [void][IO.Directory]::CreateDirectory($stateDir); [IO.File]::WriteAllText($seenPath, ($(if ($seen -eq '') { $language } else { $seen.Trim() + ',' + $language }))) }
     catch { exit 0 }    # an unrecordable once-marker must not become a per-prompt note
     $entry = $voiceMap[$language]
-    $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message ('VOICE: reply in ' + $entry.Name + ' -> Skill `' + $entry.Key + '` before first sentence (once/session, after compaction).')
+    $message = 'VOICE: reply in ' + $entry.Name + ' -> Skill `' + $entry.Key + '` before first sentence; reload after compaction.'
+    if ($language -eq 'persian') { $message += ' ' + $note }
+    $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $message
     exit $emit.ExitCode
 }
 

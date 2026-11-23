@@ -270,7 +270,7 @@ Check 'negative control: a project with no gate history reports nothing' (
 # the agent corrects and writes a SECOND wrap-up, the next gate blocks again.
 Check 'a real wrap-up is recognised (both labels, each starting a line)' (
     Test-ClosingSummaryPublished -Text "All set.`nDONE`n- shipped X`nREMAINING`n- nothing")
-Check 'the JSONL escape form counts as a line start too' (
+Check 'separate bare headings remain compatible' (
     Test-ClosingSummaryPublished -Text 'All set.
 DONE
 - shipped X
@@ -278,6 +278,25 @@ REMAINING
 - nothing')
 Check 'markdown bold/bullet decoration does not hide it' (
     Test-ClosingSummaryPublished -Text "x`n**DONE**`ny`n**REMAINING**`nz")
+$rlm = [char]0x200F; $rli = [char]0x2067; $pdi = [char]0x2069
+foreach ($mark in @('', "$rlm", "$rli", "$rlm$rli")) {
+    $suffix = if ($mark.Contains([string]$rli)) { "$pdi" } else { '' }
+    Check ('separate closing lines with ' + $mark.Length + ' directional prefix characters') (
+        Test-ClosingSummaryPublished -Text "$mark- **DONE:** shipped$suffix`r`n$mark+ __REMAINING:__ nothing$suffix")
+}
+$references = @('`REMAINING:`', '`DONE / REMAINING:`', '"REMAINING:"', "'REMAINING:'", ([char]0xAB + 'REMAINING:' + [char]0xBB))
+foreach ($reference in $references) {
+    Check ('a quoted or inline-code mention is not a second label: ' + $reference) (
+        Test-ClosingSummaryPublished -Text ("DONE: Updated the $reference label." + "`nREMAINING: nothing"))
+}
+foreach ($indent in @('    ', "`t")) {
+    Check ('an indented label is code, not a closing line: ' + [int][char]$indent[0]) (
+        -not (Test-ClosingSummaryPublished -Text ("${indent}DONE: example`nREMAINING: nothing")))
+}
+foreach ($combined in @('DONE / REMAINING: nothing', 'DONE: shipped REMAINING: nothing', 'DONE: shipped\nREMAINING: nothing', "DONE / REMAINING: shipped`nREMAINING: nothing")) {
+    Check ('combined closing labels are not two lines: ' + $combined) (-not (Test-ClosingSummaryPublished -Text $combined))
+}
+Check 'NEGATIVE: quoted closing labels are not a wrap-up' (-not (Test-ClosingSummaryPublished -Text "> DONE: example`n> REMAINING: example"))
 Check 'NEGATIVE: prose that merely mentions the words is not a wrap-up' (
     -not (Test-ClosingSummaryPublished -Text 'I will write DONE and REMAINING at the end.'))
 Check 'NEGATIVE: only one of the two labels is not a wrap-up' (

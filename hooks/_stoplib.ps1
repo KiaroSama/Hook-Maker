@@ -692,12 +692,10 @@ function Get-ClosingAssistantText {
 function Test-ClosingSummaryPublished {
     param([AllowEmptyString()][string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
-    # A transcript line break is the two-character \n escape as often as a real
-    # one - the same rule the other closing detectors follow.
-    $anchor = '(?im)(?:^|\n)[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?'
-    $hasDone = ($Text -match ($anchor + 'DONE\b'))
-    $hasRemaining = ($Text -match ($anchor + 'REMAINING\b'))
-    return ($hasDone -and $hasRemaining)
+    if (-not (Get-Command Get-ClosingDeclarationLine -ErrorAction SilentlyContinue)) { return $false }
+    $done = Get-ClosingDeclarationLine -Text $Text -LabelPattern 'DONE' -SummaryLabel
+    $remaining = Get-ClosingDeclarationLine -Text $Text -LabelPattern 'REMAINING' -SummaryLabel
+    return ($null -ne $done -and $null -ne $remaining)
 }
 
 # Record that this task published its wrap-up, so later blocks can refuse a

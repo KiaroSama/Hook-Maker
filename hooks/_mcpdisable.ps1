@@ -15,6 +15,7 @@ $script:PluginMcpConnectorMap = @{
     'chrome-devtools-mcp@chrome-devtools-plugins' = 'chrome-devtools'
     'claude-bughunter@elementalsouls'           = 'hackerone'
     'context-mode@context-mode'                 = 'context-mode'
+    'slint@slint'                               = 'slint-docs'
 }
 
 function ConvertFrom-McpDisableJson {

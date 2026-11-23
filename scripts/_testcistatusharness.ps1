@@ -46,6 +46,8 @@ function Fire {
         $startArgs.Environment = @{ PATH = $env:PATH; GH_MOCK_DIR = $env:GH_MOCK_DIR; LOCALAPPDATA = $env:LOCALAPPDATA; CLAUDE_PROJECT_DIR = $claudeProjectDir }
     }
     $proc = Start-Process @startArgs
+    # Windows PowerShell can lose ExitCode for a redirected child without this handle.
+    $null = $proc.Handle
     # Bounded: -Wait has no ceiling. A hook that blocks on stdin or deadlocks
     # would otherwise hang this suite until the bucket's blunt per-suite limit
     # killed it, which reports a timed-out SUITE instead of this child.
@@ -88,6 +90,8 @@ function FireExternalBlocker {
         $startArgs.Environment = @{ PATH = $env:PATH; GH_MOCK_DIR = $env:GH_MOCK_DIR; LOCALAPPDATA = $env:LOCALAPPDATA; CLAUDE_PROJECT_DIR = $claudeProjectDir }
     }
     $proc = Start-Process @startArgs
+    # Windows PowerShell can lose ExitCode for a redirected child without this handle.
+    $null = $proc.Handle
     # Bounded: -Wait has no ceiling. A hook that blocks on stdin or deadlocks
     # would otherwise hang this suite until the bucket's blunt per-suite limit
     # killed it, which reports a timed-out SUITE instead of this child.

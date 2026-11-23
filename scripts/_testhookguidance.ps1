@@ -40,6 +40,16 @@ $guidanceBudgets=@{
     'Utf8-Encoding-Check'=2563
     'Writing-Voice-Check'=880    # spec 038; spec 041: + written-text advisory; order 106: + comment gate
 }
+$ciStatus = Join-Path $guidanceRoot 'Ci-Status-Check/Ci-Status-Check.ps1'
+$ciAst = [Management.Automation.Language.Parser]::ParseFile($ciStatus, [ref]$null, [ref]$null)
+$ciLiterals = $ciAst.FindAll({ param($n)
+    $n -is [Management.Automation.Language.ExpandableStringExpressionAst] -or
+    ($n -is [Management.Automation.Language.StringConstantExpressionAst] -and $n.StringConstantType -ne 'BareWord')
+}, $true)
+$ciLiteralCharacters = ($ciLiterals | ForEach-Object { $_.Extent.Text.Length } | Measure-Object -Sum).Sum
+Check 'Ci-Status-Check quoted literals <= 46000' ($ciLiteralCharacters -gt 0 -and $ciLiteralCharacters -le 46000) $ciLiteralCharacters
+$ciSourceCharacters = [IO.File]::ReadAllText($ciStatus, [Text.Encoding]::UTF8).Length
+Check 'Ci-Status-Check source remains within 46000 characters' ($ciSourceCharacters -le 46000) $ciSourceCharacters
 $guidanceInventory=@(Get-HookGuidanceInventory $guidanceRoot)
 $authoredCharacters=($guidanceInventory|Measure-Object Characters -Sum).Sum
 Check '035 authored guidance <=66157 of baseline132315' ($authoredCharacters-le66157) $authoredCharacters

@@ -174,10 +174,10 @@ try {
     $summary=Join-Path $SourceRoot 'hooks\Session-Summary-Check\Session-Summary-Check.ps1'
     $payload=[pscustomobject]@{cwd=$project;session_id='shared-session';hook_event_name='SessionStart'}
     $wire=Invoke-ReviewHook $summary $payload 'claude'
-    Check-Contract 'D01 a fresh SessionStart emits real summary policy' { $wire.Exit -eq 0 -and $wire.Err -eq '' -and $wire.Out -match 'DONE\s*/\s*REMAINING' }
+    Check-Contract 'D01 a fresh SessionStart emits real summary policy' { $wire.Exit -eq 0 -and $wire.Err -eq '' -and $wire.Out -match 'Use separate lines' -and $wire.Out -match 'DONE:' -and $wire.Out -match 'REMAINING:' }
     $payload.hook_event_name='UserPromptSubmit'
     $wire=Invoke-ReviewHook $summary $payload 'codex'
-    Check-Contract 'D02 identical session text under another client keeps its own reminder' { $wire.Exit -eq 0 -and $wire.Err -eq '' -and $wire.Out -match 'DONE\s*/\s*REMAINING' } $true
+    Check-Contract 'D02 identical session text under another client keeps its own reminder' { $wire.Exit -eq 0 -and $wire.Err -eq '' -and $wire.Out -match 'Use separate lines' -and $wire.Out -match 'DONE:' -and $wire.Out -match 'REMAINING:' } $true
     $wire=Invoke-ReviewHook $summary $payload 'claude'
     Check-Contract 'D03 the original client remains suppressed inside its own cooldown' { $wire.Exit -eq 0 -and $wire.Out -eq '' -and $wire.Err -eq '' }
     foreach ($n in 1..13) { $payload.session_id='intervening-'+$n; $null=Invoke-ReviewHook $summary $payload 'claude' }

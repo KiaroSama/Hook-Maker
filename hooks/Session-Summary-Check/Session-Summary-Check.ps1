@@ -169,9 +169,10 @@ $blocked = @(Get-BlockedGateNames -ProjectKey $projectKey -SessionId $sessionId)
 $lines = New-Object System.Collections.ArrayList
 if (-not [string]::IsNullOrEmpty($languageLine)) { [void]$lines.Add($languageLine); [void]$lines.Add('') }
 # One advisory replaces repeated policy paragraphs without dropping closure facts.
-[void]$lines.Add('Session-Summary-Check: advisory, one short DONE / REMAINING at task end (after MCP/Skills/Rules lines), user lang; never mid-work.')
+[void]$lines.Add('Session-Summary-Check: advisory, one brief wrap-up at task end (after MCP/Skills/Rules lines), in the user''s language. Use separate lines. Skip filler; account for each numbered item.')
 [void]$lines.Add('Published: fix changed claims once, no second wrap-up. Verify memory/Git/exact-SHA CI/docs/tests/cleanup/secrets or state gap.')
-[void]$lines.Add('DONE: verified work/checks/gates; REMAINING: open required items/blockers/untested paths with reasons. History != open gate.')
+[void]$lines.Add('DONE: verified work/checks/gates.')
+[void]$lines.Add('REMAINING: open required items/blockers/untested paths with reasons. History != open gate.')
 
 # A summary that went out while a gate was still open. Stated ONCE, as a fact
 # about what already happened, and never turned into a demand for a correction

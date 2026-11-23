@@ -33,6 +33,7 @@ function Get-HookGuidanceInventory {
         'Test-Run-Guard/_commandanalysis.ps1|New-GuardedInvocation',
         'Test-Run-Guard/_datablocks.ps1|Get-ReceivingSegmentTokens'
     )
+    $variables += @('$script:SlintRoute', '$script:NoteSlint', '$script:NoteNumera')
     $groups = @{}
     foreach ($file in @(Get-ChildItem -LiteralPath $HooksRoot -File -Filter '*.ps1' -Recurse | Where-Object { $_.FullName -notmatch '[/\\]ZZZ-[^/\\]+[/\\]' })) {
         $relative = $file.FullName.Substring($HooksRoot.TrimEnd('\','/').Length + 1).Replace('\','/')

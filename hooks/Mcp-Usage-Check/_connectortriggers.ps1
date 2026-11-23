@@ -18,6 +18,7 @@ $script:FaRustPortPattern = '(?:' +
     ')[^\r\n]{0,80}' + (-join [char[]]@(0x0628,0x0647)) + '[ \t]+(?:' +
     (-join [char[]]@(0x0631,0x0627,0x0633,0x062A)) + '|rust\b)'
 
+$script:SlintRoute = '.slint UI -> slint:slint + slint-docs MCP (search/fetch)'
 $script:ConnectorTriggers = @(
     @{ Key = 'rust-anything'; Connector = 'rust-anything'; Route = 'Rust port/rewrite -> rust-anything MCP + skill rust-anything:rust-anything (whole-app.md for full apps)'
        Pattern = ('(?i)(\brust-anything\b|\b(?:port\w*|rewrit\w*|migrat\w*|convert\w*|translat\w*|accelerat\w*|speed[ \t]+up)\b[^\r\n]{0,80}\b(?:to|in|into)[ \t]+rust\b|\brust[ \t]+(?:port|rewrite|migration)\b|' + $script:FaRustPortPattern + ')') }
@@ -25,6 +26,8 @@ $script:ConnectorTriggers = @(
        Pattern = '(?i)(\.(mp4|mkv|mov|avi|webm|m4v)\b|\bvideos?\b|\bclip\b|\u0648\u06cc\u062f\u06cc\u0648|\u0648\u06cc\u062f\u0626\u0648|\u0641\u06cc\u0644\u0645)' }
     @{ Key = 'cloudflare'; Connector = 'cloudflare'; Route = 'Cloudflare platform/Workers -> cloudflare MCP + matching cloudflare:* skill (cloudflare:turnstile-spin for Turnstile)'
        Pattern = '(?i)\b(cloudflare(?:\s+(?:workers?|dns|pages|api|zero\s+trust|d1|kv|r2))?|wrangler|durable\s+objects?|turnstile|zero\s+trust|d1\s+(?:db|database|migration|query|binding)|kv\s+(?:namespace|store|binding)|r2\s+(?:bucket|object|binding))\b' }
+    @{ Key = 'slint'; Connector = 'slint-docs'; Route = $script:SlintRoute
+       Pattern = '(?i)(\.slint(?![\w-]|\.[\w.-])|\bslint[ \t]+(?:ui|gui|layout|widgets?|components?)\b)' }
     @{ Key = 'page'; Connector = 'chrome-devtools'; Route = 'page debugging/perf/a11y -> chrome-devtools before Playwright'
        Pattern = '(?i)\b(console errors?|devtools|lighthouse|core web vitals|a11y|accessibility audit|page (?:perf|performance|load|debug\w*)|network tab)\b' }
     @{ Key = 'web'; Connector = 'Scrapling-Server'; Route = 'URL/web page -> Scrapling-Server + skill anthropic-skills:scrapling-official'
@@ -113,10 +116,37 @@ $script:NotePlaywright = 'PLAYWRIGHT: no chrome-devtools call; devtools first, e
 $script:NoteReaVideo = 'REA-VIDEO: shell lacks PYTHONIOENCODING=utf-8; set it or restart.'
 $script:NoteRustAnything = 'RUST-ANYTHING: called before skill rust-anything:rust-anything; load it (whole-app.md for full apps) first.'
 $script:NoteCloudflare = 'CLOUDFLARE: called before matching cloudflare:* skill; load it first (cloudflare:turnstile-spin for Turnstile).'
+$script:NoteSlint = 'SLINT: load slint:slint before slint-docs.'
+$script:NoteNumera = 'NUMERA GEN: load numera-gen:numera-gen before Numera-Gen-mcp.'
+$script:ConnectorSkillPairs = @(
+    @{ Connector = 'slint-docs'; ToolServer = 'plugin_slint_slint-docs'; Skill = 'slint:slint'; Note = $script:NoteSlint },
+    @{ Connector = 'Numera-Gen-mcp'; ToolServer = 'Numera-Gen-mcp'; Skill = 'numera-gen:numera-gen'; Note = $script:NoteNumera }
+)
+
+function Get-ConnectorSkillPairNotes {
+    param([AllowEmptyString()][string]$RawText, [string]$ToolName = '', $DisabledServers = $null)
+    foreach ($pair in $script:ConnectorSkillPairs) {
+        if (Test-TriggerDisabled -Trigger $pair -DisabledServers $DisabledServers) { continue }
+        $prefix = 'mcp__' + $pair.ToolServer + '__'
+        $beforeCall = $RawText
+        if ($ToolName -ne '') {
+            if (-not $ToolName.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        } else {
+            $call = [regex]::Match($RawText, '(?i)"(?:name|tool_name)"[ \t]*:[ \t]*"' + [regex]::Escape($prefix))
+            if (-not $call.Success) { continue }
+            $beforeCall = $RawText.Substring(0, $call.Index)
+        }
+        # Keep bounded-tail evidence compatible with Skill calls and Codex body reads.
+        $guidance = [regex]::Escape($pair.Skill.Split(':')[0])
+        $skillPattern = '"skill"[ \t]*:[ \t]*"' + [regex]::Escape($pair.Skill) + '"'
+        $bodyPattern = '"file_path"[ \t]*:[ \t]*"(?:\\.|[^"\\])*[\\/]+' + $guidance + '[\\/]+SKILL\.md"'
+        if ($beforeCall -notmatch $skillPattern -and $beforeCall -notmatch $bodyPattern) { $pair.Note }
+    }
+}
 
 # Pairing / ordering advisories (orders 105 & 107). '' or lines.
 function Get-ConnectorPairingNotes {
-    param([AllowEmptyString()][string]$RawText)
+    param([AllowEmptyString()][string]$RawText, $DisabledServers = $null)
     $notes = New-Object System.Collections.Generic.List[string]
     if ([string]::IsNullOrEmpty($RawText)) { return @() }
     $scr = [regex]::Match($RawText, $script:ScraplingCallPattern)
@@ -139,12 +169,12 @@ function Get-ConnectorPairingNotes {
     if ([regex]::IsMatch($RawText, $script:ReaVideoCallPattern) -and $env:PYTHONIOENCODING -notmatch '(?i)^utf-?8') {
         [void]$notes.Add($script:NoteReaVideo)
     }
-    return @($notes)
+    return (@($notes) + @(Get-ConnectorSkillPairNotes -RawText $RawText -DisabledServers $DisabledServers))
 }
 
 # Mid-turn PreToolUse advisories so the model receives guidance before Stop.
 function Get-ConnectorPreToolNotes {
-    param([string]$ToolName, $ToolInput, [AllowEmptyString()][string]$RawText)
+    param([string]$ToolName, $ToolInput, [AllowEmptyString()][string]$RawText, $DisabledServers = $null)
     $notes = New-Object System.Collections.Generic.List[string]
     if ([string]::IsNullOrWhiteSpace($ToolName)) { return @() }
     if ($ToolName -match '(?i)^mcp__Scrapling[-_]?Server__' -and $RawText -notmatch $script:ScraplingSkillPattern) {
@@ -171,5 +201,5 @@ function Get-ConnectorPreToolNotes {
             }
         }
     }
-    return @($notes)
+    return (@($notes) + @(Get-ConnectorSkillPairNotes -ToolName $ToolName -RawText $RawText -DisabledServers $DisabledServers))
 }

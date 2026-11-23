@@ -40,7 +40,55 @@ function Invoke-McpGatewayRegression {
     }
 }
 
+function Invoke-McpV101Regression {
+    $slint = 'mcp__plugin_slint_slint-docs__search'
+    $numera = 'mcp__Numera-Gen-mcp__list_jobs'
+    . (Join-Path $PSScriptRoot '_installlibregistration.ps1')
+    $matcher = Get-ExpectedMatcher -EventName PreToolUse -Client claude -HookName 'Mcp-Usage-Check'
+    Check 'V101 Claude PreToolUse registration dispatches both connector calls' ($slint -cmatch $matcher -and $numera -cmatch $matcher)
+    $project = New-Proj 'McpV101'
+    $disabledProject = New-Proj 'McpV101Disabled'
+    $settings = Join-Path $disabledProject '.claude\settings.local.json'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $settings) -Force | Out-Null
+    Write-Utf8 $settings '{"enabledPlugins":{"slint@slint":false},"deniedMcpServers":[{"serverName":"Numera-Gen-mcp"}]}'
+    . (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks/_mcpdisable.ps1')
+    $disabled = Get-ProjectDisabledMcpServers -ProjectRoot $disabledProject -SettingsPaths @($settings) -UserClaudeJsonPath (Join-Path $Work 'absent-claude.json')
+    Check 'V101 slint plugin maps to slint-docs' (Test-McpServerDisabled $disabled 'slint-docs')
+
+    $prompt = 'Fix the layout in ui/main.slint'
+    $r = Fire -HookPath $McpHook -Cwd $project -RawStdin (New-PromptStdin $project 'UserPromptSubmit' ($prompt + '.') 'slint-enabled')
+    Check 'V101 Slint UI route names the skill and docs tools after sentence punctuation' ($r.Out -match 'slint:slint' -and $r.Out -match 'slint-docs' -and $r.Out -match 'search' -and $r.Out -match 'fetch') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $project -RawStdin (New-PromptStdin $project 'UserPromptSubmit' 'Read ui/main.slint.bak for context' 'slint-backup')
+    Check 'V101 a Slint backup filename does not activate the route' ($r.Out -notmatch 'slint:slint|slint-docs') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $disabledProject -RawStdin (New-PromptStdin $disabledProject 'UserPromptSubmit' $prompt 'slint-disabled')
+    Check 'V101 disabled Slint prompt emits no route' ($r.Out -notmatch 'slint:slint|slint-docs') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $disabledProject -RawStdin (New-StopStdin $disabledProject (New-ToolTranscript 'slint-quiet' 'Read' 'Done.') 'slint-disabled')
+    Check 'V101 disabled Slint prompt adds no Stop block' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision"') $r.Out
+
+    foreach ($pair in @(@($slint, 'slint:slint'), @($numera, 'numera-gen:numera-gen'))) {
+        $tool, $skill = $pair
+        $history = New-ToolTranscript $skill.Replace(':', '-') $tool 'MCP used: fixture'
+        # Stop queues carryover by project; unrelated cases must not consume it.
+        $skillPath = Join-Path $Work ($skill.Replace(':', '-') + '-loaded.jsonl')
+        $skillLine = @{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = 'Skill'; input = @{ skill = $skill } }) } } | ConvertTo-Json -Compress -Depth 8
+        Write-Utf8 $skillPath ($skillLine + "`n" + [IO.File]::ReadAllText($history))
+        foreach ($case in @(
+            @{ Cwd = (New-Proj ('McpV101NoSkill-' + $skill.Replace(':','-'))); Tag = 'missing'; Pre = (Join-Path $Work 'absent-pair.jsonl'); Stop = $history; Advise = $true },
+            @{ Cwd = $project; Tag = 'loaded'; Pre = $skillPath; Stop = $skillPath; Advise = $false },
+            @{ Cwd = $disabledProject; Tag = 'disabled'; Pre = (Join-Path $Work 'absent-pair.jsonl'); Stop = (New-ToolTranscript ('disabled-' + $skill.Replace(':','-')) $tool 'Done.'); Advise = $false }
+        )) {
+            $match = [regex]::Escape($skill)
+            $pre = @{ session_id = ('pre-' + $skill + $case.Tag); cwd = $case.Cwd; hook_event_name = 'PreToolUse'; tool_name = $tool; tool_input = @{}; transcript_path = $case.Pre } | ConvertTo-Json -Compress
+            $r = Fire -HookPath $McpHook -Cwd $case.Cwd -RawStdin $pre
+            Check ('V101 PreToolUse ' + $skill + ' ' + $case.Tag) ($r.Exit -eq 0 -and $r.Out -notmatch '"decision"' -and ($r.Out -match $match) -eq $case.Advise) $r.Out
+            $r = Fire -HookPath $McpHook -Cwd $case.Cwd -RawStdin (New-StopStdin $case.Cwd $case.Stop ('stop-' + $skill + $case.Tag))
+            Check ('V101 Stop ' + $skill + ' ' + $case.Tag) ($r.Exit -eq 0 -and $r.Out -notmatch '"decision"' -and ($r.Out -match $match) -eq $case.Advise -and ($case.Tag -ne 'disabled' -or $r.Out -eq '')) $r.Out
+        }
+    }
+}
+
     Invoke-McpGatewayRegression (Split-Path -Parent $PSScriptRoot)
+    Invoke-McpV101Regression
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: input handling ---' -ForegroundColor Cyan
     $plain = New-Proj 'Plain'

@@ -116,7 +116,8 @@ try {
     Check 'summary: asks for a DONE section' ($r.Out -match 'DONE') $r.Out
     Check 'summary: asks for a REMAINING section' ($r.Out -match 'REMAINING') $r.Out
     Check 'summary: closing section is last and only when handing back work' ($r.Out -match 'after MCP/Skills/Rules lines' -and $r.Out -match 'at task end') $r.Out
-    Check 'summary: exactly one wrap-up per task, not during waits' ($r.Out -match 'one short DONE / REMAINING' -and $r.Out -match 'at task end') $r.Out
+    Check 'summary: one wrap-up per task with separate closing lines' ($r.Out -match 'one brief wrap-up' -and $r.Out -match 'separate lines' -and $r.Out -match 'at task end') $r.Out
+    Check 'summary: no filler, account for every numbered item' ($r.Out -match 'Skip filler' -and $r.Out -match 'each numbered item') $r.Out
     Check 'summary: authored guidance stays under 1300 characters' (([string](($r.Out|ConvertFrom-Json).hookSpecificOutput.additionalContext)).Length -lt 1300) $r.Out
     # L01: wording alone was tried and did not hold - the rule now has to say
     # that a correction turn adds NOTHING, because that is the turn that used to
@@ -124,7 +125,27 @@ try {
     Check 'summary: a gate that blocks afterwards is a CORRECTION turn, not a reason to restate' (
         $r.Out -match 'fix changed claims once, no second wrap-up') $r.Out
     Check 'summary: it is once per TASK, not once per message or per gate' (
-        $r.Out -match 'one short DONE / REMAINING') $r.Out
+        $r.Out -match 'one brief wrap-up') $r.Out
+
+    . (Join-Path $HooksRoot 'Session-Summary-Check\_generation.ps1')
+    $rlm = [char]0x200F; $rli = [char]0x2067; $pdi = [char]0x2069
+    foreach ($mark in @('', "$rlm", "$rli", "$rlm$rli")) {
+        $suffix = if ($mark.Contains([string]$rli)) { "$pdi" } else { '' }
+        Check ('generation: separate closing lines with ' + $mark.Length + ' directional prefix characters') (
+            Test-GenerationSummaryText "$mark- **DONE:** shipped$suffix`r`n$mark+ __REMAINING:__ nothing$suffix")
+    }
+    $references = @('`REMAINING:`', '`DONE / REMAINING:`', '"REMAINING:"', "'REMAINING:'", ([char]0xAB + 'REMAINING:' + [char]0xBB))
+    foreach ($reference in $references) {
+        Check ('generation: quoted or inline-code mention is not a second label: ' + $reference) (
+            Test-GenerationSummaryText ("DONE: Updated the $reference label." + "`nREMAINING: nothing"))
+    }
+    foreach ($indent in @('    ', "`t")) {
+        Check ('generation: an indented label is code: ' + [int][char]$indent[0]) (
+            -not (Test-GenerationSummaryText ("${indent}DONE: example`nREMAINING: nothing")))
+    }
+    foreach ($combined in @('DONE / REMAINING: nothing', 'DONE: shipped REMAINING: nothing', "DONE: shipped; REMAINING: nothing`nREMAINING: nothing")) {
+        Check ('generation: combined closing labels are rejected: ' + $combined) (-not (Test-GenerationSummaryText $combined))
+    }
     Check 'summary: names the preconditions that make the carrying message the last one' (
         $r.Out -match 'memory/Git/exact-SHA CI/docs/tests/cleanup/secrets' -and $r.Out -match 'or state gap') $r.Out
     Check 'summary: names the sibling requirements it must follow' (

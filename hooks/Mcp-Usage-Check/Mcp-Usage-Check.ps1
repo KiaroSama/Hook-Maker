@@ -78,7 +78,7 @@ if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'SessionStart' }
 if ($eventName -notin @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Stop', 'SubagentStop')) { exit 0 }
 if ($eventName -eq 'PreToolUse') {
     $preToolName = [string](Get-Field $hookInput 'tool_name')
-    if ($preToolName -notmatch '(?i)^(?:mcp__(?:Scrapling[-_]?Server|(?:plugin_[A-Za-z0-9_.\-]*_)?(?:playwright|rust[-_]?anything|cloudflare)|[A-Za-z0-9_.\-]*computer[-_]?use)|computer$|Edit$|Write$|MultiEdit$)') { exit 0 }
+    if ($preToolName -notmatch '(?i)^(?:mcp__(?:Scrapling[-_]?Server|plugin_slint_slint-docs__|Numera-Gen-mcp__|(?:plugin_[A-Za-z0-9_.\-]*_)?(?:playwright|rust[-_]?anything|cloudflare)|[A-Za-z0-9_.\-]*computer[-_]?use)|computer$|Edit$|Write$|MultiEdit$)') { exit 0 }
 }
 
 # A Stop hook that re-fires on its own block is the classic hook loop; the
@@ -192,8 +192,9 @@ if ($eventName -eq 'PreToolUse') {
     $carry = Get-CarryoverText $hookInput
     if ($carry -ne '') { [void]$preNotes.Add($carry) }
     if (Get-Command Get-ConnectorPreToolNotes -ErrorAction SilentlyContinue) {
+        $preDisabledMcp = if ($preToolName -match '(?i)^mcp__(?:plugin_slint_slint-docs|Numera-Gen-mcp)__' -and (Get-Command Get-ProjectDisabledMcpServers -ErrorAction SilentlyContinue)) { Get-ProjectDisabledMcpServers -ProjectRoot $cwd }
         $preTail = [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput))
-        foreach ($pn in @(Get-ConnectorPreToolNotes -ToolName $preToolName -ToolInput (Get-Field $hookInput 'tool_input') -RawText $preTail)) {
+        foreach ($pn in @(Get-ConnectorPreToolNotes -ToolName $preToolName -ToolInput (Get-Field $hookInput 'tool_input') -RawText $preTail -DisabledServers $preDisabledMcp)) {
             $tok = $(if ($pn.StartsWith('DESKTOP ROUTE:')) { 'desktop-route' } else { 'pairing|' + $pn.Split(':')[0] })
             if (Test-ShouldReport $tok) { [void]$preNotes.Add($pn) }
         }
@@ -370,11 +371,11 @@ if (Get-Command Get-DesktopRouteNote -ErrorAction SilentlyContinue) {
     $desktopNote = Get-DesktopRouteNote -RawText $rawTailCache
     if ($desktopNote -ne '' -and -not (Test-ShouldReport 'desktop-route')) { $desktopNote = '' }
 }
-# V94 pairing/order advisories (Scrapling skill, chrome-devtools before
-# Playwright, rea-video encoding): never a block, once per session per kind.
+# Pairing/order reminders never block and only report once per session per kind.
+$disabledStopMcp = if (Get-Command Get-ProjectDisabledMcpServers -ErrorAction SilentlyContinue) { Get-ProjectDisabledMcpServers -ProjectRoot $cwd } else { $null }
 if (Get-Command Get-ConnectorPairingNotes -ErrorAction SilentlyContinue) {
     if ($null -eq $rawTailCache) { $rawTailCache = [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput)) }
-    foreach ($pn in @(Get-ConnectorPairingNotes -RawText $rawTailCache)) {
+    foreach ($pn in @(Get-ConnectorPairingNotes -RawText $rawTailCache -DisabledServers $disabledStopMcp)) {
         if (-not (Test-ShouldReport ('pairing|' + $pn.Split(':')[0]))) { continue }
         $desktopNote = $(if ($desktopNote -ne '') { $desktopNote + "`n" + $pn } else { $pn })
     }
@@ -403,7 +404,6 @@ function Exit-WithDesktopNote {
 # before MCP attaches) or state "MCP used: none - <reason>"; an unrelated MCP
 # call + summary line cannot bypass it, while a CLI run satisfies it.
 $rawTail = if ($null -ne $rawTailCache) { $rawTailCache } else { [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput)) }
-$disabledStopMcp = if (Get-Command Get-ProjectDisabledMcpServers -ErrorAction SilentlyContinue) { Get-ProjectDisabledMcpServers -ProjectRoot $cwd } else { $null }
 $triggerList = @($triggerKeys -split ',' | Where-Object { $_ -ne '' })
 if ($null -ne $disabledStopMcp -and $disabledStopMcp.Count -gt 0) {
     $triggerList = @($triggerList | Where-Object {
@@ -447,6 +447,8 @@ if ($hasSummaryLine) { Exit-WithDesktopNote }
 $servers = New-Object System.Collections.Generic.List[string]
 foreach ($m in [regex]::Matches($rawTail, '"(?:name|tool_name)"[ \t]*:[ \t]*"mcp__([A-Za-z0-9_.\-]+?)__')) {
     $id = $m.Groups[1].Value
+    $pair = $script:ConnectorSkillPairs | Where-Object { $_.ToolServer -eq $id }
+    if ($null -ne $pair -and (Test-TriggerDisabled -Trigger $pair -DisabledServers $disabledStopMcp)) { continue }
     if ($id -ne '' -and -not $servers.Contains($id)) { [void]$servers.Add($id) }
     if ($servers.Count -ge 8) { break }
 }
