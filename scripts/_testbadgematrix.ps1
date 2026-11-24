@@ -16,6 +16,21 @@ function Invoke-BadgeFormatRegression {
     Write-Readme $repo $good
     $r = Fire -HookPath $BaselineHook -Cwd $repo
     Check 'badge format: mandatory four by reserved colour, donations last, flat-square -> no format note' ($r.Out -notmatch 'Badge format:') $r.Out
+    Check 'V102 badge guidance notes live/tag-linked section-synced badges and Author -> License -> Donate order' (
+        $r.Out -match 'live/tag-linked section-synced' -and $r.Out -match '## Author -> brief ## License -> ## Donate last') $r.Out
+
+    $liveGood = @(
+        '[![CI](https://img.shields.io/github/actions/workflow/status/o/r/ci.yml?style=flat-square&color=1f6feb)](.github/workflows/ci.yml)',
+        '[![Tag](https://img.shields.io/github/v/tag/o/r?style=flat-square&color=0f766e)](https://github.com/o/r/tags)',
+        '[![Rust 1.99](https://img.shields.io/badge/rust-1.99-8b5cf6)](Cargo.toml)',
+        '[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0891b2)](#install)',
+        '[![Repo size](https://img.shields.io/github/repo-size/o/r?style=flat-square&color=ca8a04)](#)',
+        '[![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate)'
+    )
+    $repoLive = New-GitRepo 'badgefmt-live' -GithubRemote:$false
+    Write-Readme $repoLive $liveGood
+    $rLive = Fire -HookPath $BaselineHook -Cwd $repoLive
+    Check 'V102 live GitHub flat-square dynamic badges with hex color pass without false format warnings' ($rLive.Out -notmatch 'Badge format:') $rLive.Out
 
     $bad = @(
         '[![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate)',

@@ -14,7 +14,7 @@
 # of the root README. It never fetches an image and never checks what a badge
 # claims - that is the agent's job with the evidence in front of it.
 
-$script:BadgeGuidance = 'BEFORE README: global-repository-rules.md README FULL; 12 to 16 verified badges/Donate. App logo/signing: global-project-lifecycle-rules.md FULL.'
+$script:BadgeGuidance = 'BEFORE README: global-repository-rules.md README FULL; 12 to 16 verified badges/Donate (live/tag-linked section-synced; end: ## Author -> brief ## License -> ## Donate last). App logo/signing: global-project-lifecycle-rules.md FULL.'
 $script:BadgeMinimum = 12
 $script:BadgeMaximum = 16
 # The donation badge and the section it links to. The section is looked for in
@@ -86,8 +86,11 @@ function Get-ReadmeBadgeFormatIssue {
     foreach ($line in $Lines) {
         foreach ($m in [regex]::Matches([string]$line, '(?i)\[!\[[^\]]*\]\(\s*(https?://img\.shields\.io/[^)\s]+)\s*\)\]\(\s*([^)\s]*)\s*\)')) {
             $url = $m.Groups[1].Value
-            $hex = if ($url -match '(?i)/badge/[^?#]*-([0-9a-f]{6})(?:[?#]|$)') { $Matches[1].ToLowerInvariant() } else { '' }
-            [void]$badges.Add([pscustomobject]@{ Url = $url; Target = $m.Groups[2].Value; Hex = $hex })
+            $isLiveGitHubFlatSquare = ($url -match '(?i)^https?://img\.shields\.io/github/[^?\s]+\?' -and $url -match '(?i)(?:[?&])style=flat-square(?:&|#|$)')
+            $hex = if ($url -match '(?i)/badge/[^?#]*-([0-9a-f]{6})(?:[?#]|$)') { $Matches[1].ToLowerInvariant() }
+                   elseif ($isLiveGitHubFlatSquare -and $url -match '(?i)(?:[?&])color=([0-9a-f]{6})(?:&|#|$)') { $Matches[1].ToLowerInvariant() }
+                   else { '' }
+            [void]$badges.Add([pscustomobject]@{ Url = $url; Target = $m.Groups[2].Value; Hex = $hex; LiveFlatSquare = $isLiveGitHubFlatSquare })
         }
     }
     $issues = New-Object System.Collections.Generic.List[string]
@@ -96,7 +99,7 @@ function Get-ReadmeBadgeFormatIssue {
     $absent = @($script:ReservedBadgeColour.Keys | Where-Object { $hexes -notcontains $script:ReservedBadgeColour[$_] } | ForEach-Object { $_ + ' #' + $script:ReservedBadgeColour[$_] })
     if ($absent.Count -gt 0) { [void]$issues.Add('mandatory missing: ' + ($absent -join ', ')) }
     if ($badges[$badges.Count - 1].Url -notmatch $script:DonateBadgePattern -and @($badges | Where-Object { $_.Url -match $script:DonateBadgePattern }).Count -gt 0) { [void]$issues.Add('donations badge not last') }
-    $shape = @($badges | Where-Object { $_.Url -match '(?i)/style/|/endpoint|\?' -or $_.Hex -eq '' })
+    $shape = @($badges | Where-Object { ((-not $_.LiveFlatSquare) -and $_.Url -match '(?i)/style/|/endpoint|\?') -or $_.Hex -eq '' })
     if ($shape.Count -gt 0) { [void]$issues.Add([string]$shape.Count + ' not plain flat-square') }
     $dupes = @($hexes | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
     if ($dupes.Count -gt 0) { [void]$issues.Add('shared colour(s) ' + ($dupes -join ', ')) }

@@ -363,6 +363,8 @@
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
     Check 'a live guarded run blocks completion' ($r.Out -match '"decision":"block"' -and $reason -match 'STILL ACTIVE') $reason
+    Check 'V102 active guarded run requires waiting until all checks finish with no mid-run piecemeal fixes' (
+        $reason -match 'Wait until ALL checks finish' -and $reason -match 'no mid-run edits/piecemeal fixes' -and $reason -match 'batch-fix all failures once') $reason
     Check 'the owner pid is named' ($reason -match ([string]$sentinel.Id)) $reason
     $sentinel.Kill()
     Check 'the live-run sentinel exits within its bound' (Wait-FixtureExit $sentinel)
@@ -390,6 +392,8 @@
     $r = Fire -Copy $c -Cwd $p
     Check 'completion is BLOCKED while run B is failed (A''s pass does not cover B)' (
         $r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match 'FAILED') $r.Out
+    Check 'V102 failed guarded run requires collecting every failure and fixing all in one batch' (
+        (Get-BlockReason $r.Out) -match 'Wait until ALL checks finish' -and (Get-BlockReason $r.Out) -match 'collect every failure' -and (Get-BlockReason $r.Out) -match 'fix all in one batch') $r.Out
     # Run B passes: BOTH runs are now satisfied.
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rB
     $r = Fire -Copy $c -Cwd $p

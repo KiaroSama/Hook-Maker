@@ -369,7 +369,10 @@ try {
     Check 'summary: Windows PowerShell 5.1 emits the same open-work classification' (
         $r51.Exit -eq 0 -and $r51.Out -match 'DONE: verified work/checks/gates' -and
         $r51.Out -match 'REMAINING: open required items/blockers/untested paths with reasons' -and
-        $r51.Out -match 'History != open gate') $r51.Out
+        $r51.Out -match 'History != open gate' -and
+        $r51.Out -match 'plain everyday language' -and
+        $r51.Out -match 'no unnecessary technical jargon unless requested' -and
+        $r51.Out -match 'minimal prose') $r51.Out
 
     # The hook is shipped source: it must stay pure ASCII, like every other
     # hook in this set (Persian is carried as \uXXXX escapes and decoded at

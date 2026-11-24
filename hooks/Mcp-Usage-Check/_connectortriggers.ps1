@@ -18,7 +18,7 @@ $script:FaRustPortPattern = '(?:' +
     ')[^\r\n]{0,80}' + (-join [char[]]@(0x0628,0x0647)) + '[ \t]+(?:' +
     (-join [char[]]@(0x0631,0x0627,0x0633,0x062A)) + '|rust\b)'
 
-$script:SlintRoute = '.slint UI -> slint:slint + slint-docs MCP (search/fetch)'
+$script:SlintRoute = '.slint UI -> slint:slint + slint-docs (search/fetch) + slint-preview (check_slint)'
 $script:ConnectorTriggers = @(
     @{ Key = 'rust-anything'; Connector = 'rust-anything'; Route = 'Rust port/rewrite -> rust-anything MCP + skill rust-anything:rust-anything (whole-app.md for full apps)'
        Pattern = ('(?i)(\brust-anything\b|\b(?:port\w*|rewrit\w*|migrat\w*|convert\w*|translat\w*|accelerat\w*|speed[ \t]+up)\b[^\r\n]{0,80}\b(?:to|in|into)[ \t]+rust\b|\brust[ \t]+(?:port|rewrite|migration)\b|' + $script:FaRustPortPattern + ')') }
@@ -42,6 +42,8 @@ $script:ConnectorTriggers = @(
        Pattern = '(?i)(\bdo (?:i|we) prefer\b|\bdid we\b|\bwhat do i (?:like|prefer|use)\b|\blast time\b|\bremember\b)' }
     @{ Key = 'desktop'; Connector = 'Vercel-Labs-Agent-Desktop'; Route = 'Windows app control -> Vercel-Labs-Agent-Desktop'
        Pattern = '(?i)\b(desktop app|windows app|click (?:the|on) (?:button|menu)|open (?:the )?app|notepad|explorer\.exe|ui automation)\b' }
+    @{ Key = 'graphify'; Connector = 'Graphify-mcp'; RequiresFile = 'graphify-out\graph.json'; Route = 'docs/specs/PR graph -> Graphify-mcp (query_graph/get_section/get_pr_impact)'
+       Pattern = '(?i)\b(graphify|markdown|\.md\b|spec(?:s|ification)?\b|docs?\b|documentation|cross[- ]cutting|architecture|pr (?:graph|impact|triage)|triage prs?)\b' }
     @{ Key = 'code'; Connector = 'Codebase-Memory-mcp'; Route = 'code question -> Codebase-Memory-mcp'
        Pattern = '(?i)\b(where is \w+ (?:defined|used|called)|who calls|call(?:er|ee)s of|call graph|codebase|how does (?:the )?\w+ (?:function|class|module|method) work)\b' }
 )
@@ -60,13 +62,23 @@ function Test-TriggerDisabled {
     return $false
 }
 
+function Test-TriggerApplicable {
+    param($Trigger, $DisabledServers, [string]$ProjectRoot = '')
+    if (Test-TriggerDisabled -Trigger $Trigger -DisabledServers $DisabledServers) { return $false }
+    if ($Trigger.ContainsKey('RequiresFile') -and -not [string]::IsNullOrWhiteSpace([string]$Trigger.RequiresFile)) {
+        if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { return $false }
+        if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot ([string]$Trigger.RequiresFile)) -PathType Leaf)) { return $false }
+    }
+    return $true
+}
+
 # One line, or '' when no class fits. At most two routes, named by class.
 function Get-ConnectorTriggerLine {
-    param([AllowEmptyString()][string]$Prompt, $DisabledServers = $null)
+    param([AllowEmptyString()][string]$Prompt, $DisabledServers = $null, [string]$ProjectRoot = '')
     if ([string]::IsNullOrWhiteSpace($Prompt)) { return '' }
     $routes = New-Object System.Collections.Generic.List[string]
     foreach ($t in $script:ConnectorTriggers) {
-        if (Test-TriggerDisabled -Trigger $t -DisabledServers $DisabledServers) { continue }
+        if (-not (Test-TriggerApplicable -Trigger $t -DisabledServers $DisabledServers -ProjectRoot $ProjectRoot)) { continue }
         if ($Prompt -match $t.Pattern) { [void]$routes.Add($t.Route) }
         if ($routes.Count -ge 2) { break }
     }
@@ -76,9 +88,9 @@ function Get-ConnectorTriggerLine {
 
 # Classes matched, for the Stop half: comma list of keys, '' when none.
 function Get-ConnectorTriggerKeys {
-    param([AllowEmptyString()][string]$Prompt, $DisabledServers = $null)
+    param([AllowEmptyString()][string]$Prompt, $DisabledServers = $null, [string]$ProjectRoot = '')
     if ([string]::IsNullOrWhiteSpace($Prompt)) { return '' }
-    $keys = @($script:ConnectorTriggers | Where-Object { (-not (Test-TriggerDisabled -Trigger $_ -DisabledServers $DisabledServers)) -and ($Prompt -match $_.Pattern) } | ForEach-Object { $_.Key })
+    $keys = @($script:ConnectorTriggers | Where-Object { (Test-TriggerApplicable -Trigger $_ -DisabledServers $DisabledServers -ProjectRoot $ProjectRoot) -and ($Prompt -match $_.Pattern) } | ForEach-Object { $_.Key })
     return ($keys -join ',')
 }
 
@@ -114,17 +126,19 @@ $script:CloudflareSkillPattern = '(?i)("skill"[ \t]*:[ \t]*"cloudflare:[A-Za-z0-
 $script:NoteScrapling = 'SCRAPLING: called before skill anthropic-skills:scrapling-official; load it first.'
 $script:NotePlaywright = 'PLAYWRIGHT: no chrome-devtools call; devtools first, else state why.'
 $script:NoteReaVideo = 'REA-VIDEO: shell lacks PYTHONIOENCODING=utf-8; set it or restart.'
-$script:NoteRustAnything = 'RUST-ANYTHING: called before skill rust-anything:rust-anything; load it (whole-app.md for full apps) first.'
+$script:NoteRustAnything = 'RUST-ANYTHING: hard-stop gate; load /rust-anything:rust-anything (whole-app.md for full apps) + MCP + companion Rust skills first. Do not proceed without it; repair or stop for the user if unavailable mid-rewrite.'
 $script:NoteCloudflare = 'CLOUDFLARE: called before matching cloudflare:* skill; load it first (cloudflare:turnstile-spin for Turnstile).'
-$script:NoteSlint = 'SLINT: load slint:slint before slint-docs.'
+$script:NoteSlint = 'SLINT: load slint:slint before slint-docs/slint-preview.'
 $script:NoteNumera = 'NUMERA GEN: load numera-gen:numera-gen before Numera-Gen-mcp.'
 $script:ConnectorSkillPairs = @(
     @{ Connector = 'slint-docs'; ToolServer = 'plugin_slint_slint-docs'; Skill = 'slint:slint'; Note = $script:NoteSlint },
+    @{ Connector = 'slint-preview'; ToolServer = 'plugin_slint_slint-preview'; Skill = 'slint:slint'; Note = $script:NoteSlint },
     @{ Connector = 'Numera-Gen-mcp'; ToolServer = 'Numera-Gen-mcp'; Skill = 'numera-gen:numera-gen'; Note = $script:NoteNumera }
 )
 
 function Get-ConnectorSkillPairNotes {
     param([AllowEmptyString()][string]$RawText, [string]$ToolName = '', $DisabledServers = $null)
+    $emitted = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
     foreach ($pair in $script:ConnectorSkillPairs) {
         if (Test-TriggerDisabled -Trigger $pair -DisabledServers $DisabledServers) { continue }
         $prefix = 'mcp__' + $pair.ToolServer + '__'
@@ -140,7 +154,7 @@ function Get-ConnectorSkillPairNotes {
         $guidance = [regex]::Escape($pair.Skill.Split(':')[0])
         $skillPattern = '"skill"[ \t]*:[ \t]*"' + [regex]::Escape($pair.Skill) + '"'
         $bodyPattern = '"file_path"[ \t]*:[ \t]*"(?:\\.|[^"\\])*[\\/]+' + $guidance + '[\\/]+SKILL\.md"'
-        if ($beforeCall -notmatch $skillPattern -and $beforeCall -notmatch $bodyPattern) { $pair.Note }
+        if ($beforeCall -notmatch $skillPattern -and $beforeCall -notmatch $bodyPattern -and $emitted.Add([string]$pair.Note)) { $pair.Note }
     }
 }
 

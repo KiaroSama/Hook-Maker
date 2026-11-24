@@ -64,7 +64,7 @@ function Resolve-FailedRunVerdict {
         Lines    = @(
             'latest guarded run FAILED, exit=' + $exitCode + '.',
             $(if ($LastProgress -ne '') { 'Progress: ' + $LastProgress } else { 'No progress.' }),
-            'Repair SAME scripts\Run-Tests-Guarded.ps1 overall=ok or clean-HEAD CI; no weaker assertions/exits, unresolved!=pass.',
+            'Wait until ALL checks finish, collect every failure, fix all in one batch, then rerun SAME scripts\Run-Tests-Guarded.ps1 overall=ok or clean-HEAD CI; no weaker assertions/exits, unresolved!=pass.',
             'CI: ' + $ci.Reason + '.',
             'SAME WHOLE argv green survives edits, three suites!=one. pwsh -NoProfile -File "' + $HookPath + '" -ResolveIncident ' + $key + ' -RecoveryRunId "<id>" -ProjectRoot "' + $ProjectRoot + '" -Reason "<>=80B verified repair>".')
     }

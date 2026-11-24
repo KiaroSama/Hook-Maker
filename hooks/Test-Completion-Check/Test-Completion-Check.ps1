@@ -504,7 +504,7 @@ if ($activePid -gt 0) {
     Save-CompletionState
     Write-Finding -Blocking $true -Lines @(
         'STILL ACTIVE owner ' + $activePid + '; UNKNOWN.',
-        'Await exit/receipt or guarded stop; no pre-exit result.')
+        'Wait until ALL checks finish (silent background watcher); no mid-run edits/piecemeal fixes, then batch-fix all failures once; no pre-exit result.')
 }
 
 # ---- 1b. a guarded run DIED without recording how it ended (OWNERLESS) -----

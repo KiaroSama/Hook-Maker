@@ -424,6 +424,7 @@ function Get-ReviewRequestLines {
     # ::deep-debug work introduced. Detection stays generic (any real non-doc
     # change); pure internal changes still clear with -Result NoUpdate.
     [void]$lines.Add('BEFORE review: global-hook-rules.md Hook Change Gate/global-repository-rules.md README FULL, all affected contracts.')
+    [void]$lines.Add('README: live/tag-linked section-synced badges (public dynamic or private automated sync, zero private-repo leak); ending order: ## Author -> brief ## License -> ## Donate (last).')
     [void]$lines.Add('Update task-stale tracked public .md/.txt ONLY; no unrelated edits.')
     [void]$lines.Add('Acknowledge: ' + $ackCommand + ' (none stale: -Result NoUpdate -Reason "<reason>").')
     return $lines.ToArray()

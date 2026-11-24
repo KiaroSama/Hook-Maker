@@ -411,7 +411,7 @@ function Write-Block {
     param([string]$Outcome, [string]$Reason, [switch]$Watch)
     Save-State -Outcome $Outcome
     if ($Watch) {
-        $Reason += ' Use a silent background watcher until ALL jobs finish (GitHub CI and local CI/test runs); no mid-wait updates.'
+        $Reason += ' Use a silent background watcher until ALL jobs finish (GitHub CI and local CI/test runs); no mid-wait updates or piecemeal fixes before all finish, then batch-fix all failures once.'
     }
     $evidence = Get-Variable -Name snapshot -ValueOnly -ErrorAction SilentlyContinue
     $evidenceKey = $script:sha + '|' + $Outcome
@@ -665,7 +665,7 @@ if ($snapshot.BillingRuns.Count -gt 0 -and $snapshot.FailedRuns.Count -eq 0 -and
 if ($snapshot.FailedRuns.Count -gt 0 -or $snapshot.InfraRuns.Count -gt 0) {
     $parts = @()
     if ($snapshot.FailedRuns.Count -gt 0) {
-        $parts += ('FAILED: ' + ($snapshot.FailedRuns -join '; ') + '. gh run view <id> --log-failed; repair/validate/push, verify SHA; preserve tests/exits.')
+        $parts += ('FAILED: ' + ($snapshot.FailedRuns -join '; ') + '. Wait until ALL jobs finish, collect every failure (gh run view <id> --log-failed), fix all in one batch (repair/validate/push, verify SHA); preserve tests/exits.')
     }
     if ($snapshot.InfraRuns.Count -gt 0) {
         $parts += ('Abnormal: ' + ($snapshot.InfraRuns -join '; ') + '. Classify infra/access/flake; gh run rerun <id> once; -ReportExternalBlocker.')

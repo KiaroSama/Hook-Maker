@@ -87,8 +87,63 @@ function Invoke-McpV101Regression {
     }
 }
 
+function Invoke-McpV102Regression {
+    $slintPreview = 'mcp__plugin_slint_slint-preview__check_slint'
+    . (Join-Path $PSScriptRoot '_installlibregistration.ps1')
+    $matcher = Get-ExpectedMatcher -EventName PreToolUse -Client claude -HookName 'Mcp-Usage-Check'
+    Check 'V102 Claude PreToolUse registration dispatches slint-preview check_slint' ($slintPreview -cmatch $matcher)
+
+    . (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks/_mcpdisable.ps1')
+    $disProj = New-Proj 'McpV102Disabled'
+    $disSettings = Join-Path $disProj '.claude\settings.local.json'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $disSettings) -Force | Out-Null
+    Write-Utf8 $disSettings '{"enabledPlugins":{"slint@slint":false},"permissions":{"deny":["mcp__Graphify-mcp__*"]}}'
+    $claudeJson = Join-Path $Work 'v102-claude.json'
+    $projKey = $disProj.Replace('\', '/')
+    Write-Utf8 $claudeJson (@{ projects = @{ $projKey = @{ disabledMcpServers = @('Graphify-mcp') } } } | ConvertTo-Json -Compress -Depth 6)
+    $disabled = Get-ProjectDisabledMcpServers -ProjectRoot $disProj -SettingsPaths @($disSettings) -UserClaudeJsonPath $claudeJson
+    Check 'V102 slint@slint disable suppresses both slint-docs and slint-preview' (
+        (Test-McpServerDisabled $disabled 'slint-docs') -and (Test-McpServerDisabled $disabled 'slint-preview'))
+    Check 'V102 Graphify-mcp local disable resolves cleanly' (Test-McpServerDisabled $disabled 'Graphify-mcp')
+
+    $graphed = New-Proj 'McpV102Graphed'
+    New-Item -ItemType Directory -Path (Join-Path $graphed 'graphify-out') -Force | Out-Null
+    Write-Utf8 (Join-Path $graphed 'graphify-out\graph.json') '{}'
+    $ungraphed = New-Proj 'McpV102Ungraphed'
+    $graphPrompt = 'Check cross-cutting architecture and PR graph impact in docs'
+    $r = Fire -HookPath $McpHook -Cwd $graphed -RawStdin (New-PromptStdin $graphed 'UserPromptSubmit' $graphPrompt 'v102-graph-on')
+    Check 'V102 Graphify-mcp trigger fires when graphify-out/graph.json exists' ($r.Out -match 'Graphify-mcp' -and $r.Out -match 'query_graph') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $ungraphed -RawStdin (New-PromptStdin $ungraphed 'UserPromptSubmit' $graphPrompt 'v102-graph-absent')
+    Check 'V102 Graphify-mcp trigger stays silent without graphify-out/graph.json' ($r.Out -notmatch 'Graphify-mcp') $r.Out
+    New-Item -ItemType Directory -Path (Join-Path $disProj 'graphify-out') -Force | Out-Null
+    Write-Utf8 (Join-Path $disProj 'graphify-out\graph.json') '{}'
+    $r = Fire -HookPath $McpHook -Cwd $disProj -RawStdin (New-PromptStdin $disProj 'UserPromptSubmit' $graphPrompt 'v102-graph-disabled')
+    Check 'V102 locally disabled Graphify-mcp suppresses Graphify-mcp route' ($r.Out -notmatch 'CONNECTORS first:[^\r\n]*Graphify-mcp') $r.Out
+
+    $slintProj = New-Proj 'McpV102Slint'
+    $r = Fire -HookPath $McpHook -Cwd $slintProj -RawStdin (New-PromptStdin $slintProj 'UserPromptSubmit' 'Fix ui/app.slint layout' 'v102-slint-route')
+    Check 'V102 Slint route covers both slint-docs and slint-preview check_slint' (
+        $r.Out -match 'slint:slint' -and $r.Out -match 'slint-docs' -and $r.Out -match 'slint-preview' -and $r.Out -match 'check_slint') $r.Out
+
+    $histPrev = New-ToolTranscript 'v102-slint-prev' $slintPreview 'MCP used: fixture'
+    $loadedPrev = Join-Path $Work 'v102-slint-prev-loaded.jsonl'
+    $skLine = @{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = 'Skill'; input = @{ skill = 'slint:slint' } }) } } | ConvertTo-Json -Compress -Depth 8
+    Write-Utf8 $loadedPrev ($skLine + "`n" + [IO.File]::ReadAllText($histPrev))
+    $noSkillDir = New-Proj 'McpV102SlintPrevNoSkill'
+    $prePrev = @{ session_id = 'v102-prev-missing'; cwd = $noSkillDir; hook_event_name = 'PreToolUse'; tool_name = $slintPreview; tool_input = @{}; transcript_path = (Join-Path $Work 'absent-v102.jsonl') } | ConvertTo-Json -Compress
+    $r = Fire -HookPath $McpHook -Cwd $noSkillDir -RawStdin $prePrev
+    Check 'V102 slint-preview PreToolUse advises slint:slint before check_slint' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision"' -and $r.Out -match 'slint:slint' -and $r.Out -match 'slint-preview') $r.Out
+    $preLoaded = @{ session_id = 'v102-prev-loaded'; cwd = $slintProj; hook_event_name = 'PreToolUse'; tool_name = $slintPreview; tool_input = @{}; transcript_path = $loadedPrev } | ConvertTo-Json -Compress
+    $r = Fire -HookPath $McpHook -Cwd $slintProj -RawStdin $preLoaded
+    Check 'V102 slint-preview PreToolUse stays silent after slint:slint loaded' ($r.Exit -eq 0 -and $r.Out -notmatch 'slint:slint') $r.Out
+    $preDis = @{ session_id = 'v102-prev-dis'; cwd = $disProj; hook_event_name = 'PreToolUse'; tool_name = $slintPreview; tool_input = @{}; transcript_path = (Join-Path $Work 'absent-v102.jsonl') } | ConvertTo-Json -Compress
+    $r = Fire -HookPath $McpHook -Cwd $disProj -RawStdin $preDis
+    Check 'V102 slint-preview PreToolUse stays silent when slint@slint is disabled' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+}
+
     Invoke-McpGatewayRegression (Split-Path -Parent $PSScriptRoot)
     Invoke-McpV101Regression
+    Invoke-McpV102Regression
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: input handling ---' -ForegroundColor Cyan
     $plain = New-Proj 'Plain'
@@ -328,8 +383,10 @@ function Invoke-McpV101Regression {
     $tRaMcpNoSkill = New-ToolTranscript 'mcp-ra-noskill' 'mcp__plugin_rust-anything_rust-anything__analyze' "Done.`nMCP used: rust-anything"
     $preRaStdin = @{ session_id = 'ra-mid'; cwd = $mcpV95; hook_event_name = 'PreToolUse'; tool_name = 'mcp__plugin_rust-anything_rust-anything__analyze'; tool_input = @{ path = 'src/parser.py' }; transcript_path = $tNoMcp } | ConvertTo-Json -Compress -Depth 6
     $r = Fire -HookPath $McpHook -Cwd $mcpV95 -RawStdin $preRaStdin
-    Check 'V95 mid-turn PreToolUse: rust-anything call before skill emits additionalContext immediately' (
-        $r.Out -match 'additionalContext' -and $r.Out -match 'RUST-ANYTHING: called before skill rust-anything:rust-anything') $r.Out
+    Check 'V95 mid-turn PreToolUse: rust-anything call before skill emits V102 hard-stop additionalContext immediately' (
+        $r.Out -match 'additionalContext' -and $r.Out -match 'RUST-ANYTHING: hard-stop gate' -and
+        $r.Out -match '/rust-anything:rust-anything' -and $r.Out -match 'companion Rust skills' -and
+        $r.Out -match 'Do not proceed without it' -and $r.Out -match 'repair or stop for the user') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $mcpV95 -RawStdin (New-StopStdin -Cwd $mcpV95 -Transcript $tRaMcpNoSkill -SessionId 'ra-mid')
     Check 'V95 mid-turn PreToolUse suppresses duplicate Stop pairing notice in same session' ($r.Out -notmatch 'RUST-ANYTHING:') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $mcpV95 -RawStdin (New-StopStdin -Cwd $mcpV95 -Transcript $tRaMcpNoSkill -SessionId 'ra-stoppair')

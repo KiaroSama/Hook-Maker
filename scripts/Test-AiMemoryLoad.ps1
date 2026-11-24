@@ -373,6 +373,42 @@ try {
     finally { $env:PATH = $savedPath }
 
     # =====================================================================
+    Write-Host '--- Graph-Read-Check: V102 Graphify-mcp read recognition and disable ---' -ForegroundColor Cyan
+    $pMcp = New-Proj 'GraphMcpRead'
+    New-Item -ItemType Directory -Path (Join-Path $pMcp 'graphify-out') -Force | Out-Null
+    Write-Utf8 (Join-Path $pMcp 'graphify-out\graph.json') '{}'
+    $r = Fire -Cwd $pMcp -HookPath $GraphHook -RawStdin (@{ session_id = 'gmcp-adv'; cwd = $pMcp; hook_event_name = 'SessionStart' } | ConvertTo-Json)
+    Check 'V102 Graph-Read-Check advises Graphify-mcp first alongside CLI fallback' (
+        $r.Out -like '*Graphify-mcp*' -and $r.Out -like '*query_graph*' -and $r.Out -like '*get_section*' -and $r.Out -like '*graphify query*') $r.Out
+
+    $tQuery = Join-Path $Work 'graphify-mcp-query.jsonl'
+    Write-Utf8 $tQuery ((@{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = 'mcp__Graphify-mcp__query_graph'; input = @{ question = 'arch' } }) } } | ConvertTo-Json -Compress -Depth 8) + "`n")
+    $r = Fire -Cwd $pMcp -HookPath $GraphHook -RawStdin (@{ session_id = 'gmcp-q1'; cwd = $pMcp; hook_event_name = 'UserPromptSubmit'; prompt = 'explain the overall architecture'; transcript_path = $tQuery } | ConvertTo-Json)
+    Check 'V102 mcp__Graphify-mcp__query_graph satisfies Graphify read verification' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    $tSec = Join-Path $Work 'graphify-mcp-section.jsonl'
+    Write-Utf8 $tSec ((@{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = 'mcp__Graphify-mcp__get_section'; input = @{ label = 'Overview' } }) } } | ConvertTo-Json -Compress -Depth 8) + "`n")
+    $r = Fire -Cwd $pMcp -HookPath $GraphHook -RawStdin (@{ session_id = 'gmcp-s1'; cwd = $pMcp; hook_event_name = 'UserPromptSubmit'; prompt = 'explain the overall architecture'; transcript_path = $tSec } | ConvertTo-Json)
+    Check 'V102 mcp__Graphify-mcp__get_section satisfies Graphify read verification' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    $tCli = Join-Path $Work 'graphify-cli-query.jsonl'
+    Write-Utf8 $tCli ((@{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = 'Bash'; input = @{ command = 'graphify query "architecture"' } }) } } | ConvertTo-Json -Compress -Depth 8) + "`n")
+    $r = Fire -Cwd $pMcp -HookPath $GraphHook -RawStdin (@{ session_id = 'gmcp-cli'; cwd = $pMcp; hook_event_name = 'UserPromptSubmit'; prompt = 'explain the overall architecture'; transcript_path = $tCli } | ConvertTo-Json)
+    Check 'V102 graphify query CLI still satisfies Graphify read verification' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    $tProse = Join-Path $Work 'graphify-prose.jsonl'
+    Write-Utf8 $tProse ((@{ type = 'assistant'; message = @{ content = @(@{ type = 'text'; text = 'I could call mcp__Graphify-mcp__query_graph later.' }) } } | ConvertTo-Json -Compress -Depth 8) + "`n")
+    $r = Fire -Cwd $pMcp -HookPath $GraphHook -RawStdin (@{ session_id = 'gmcp-prose'; cwd = $pMcp; hook_event_name = 'UserPromptSubmit'; prompt = 'explain the overall architecture'; transcript_path = $tProse } | ConvertTo-Json)
+    Check 'V102 prose mention of Graphify-mcp does not suppress the read advisory' ($r.Exit -eq 0 -and $r.Out -like '*Graph-Read-Check: advisory graphify-out/graph.json*') $r.Out
+
+    $pMcpDis = New-Proj 'GraphMcpDisabled'
+    New-Item -ItemType Directory -Path (Join-Path $pMcpDis 'graphify-out'), (Join-Path $pMcpDis '.claude') -Force | Out-Null
+    Write-Utf8 (Join-Path $pMcpDis 'graphify-out\graph.json') '{}'
+    Write-Utf8 (Join-Path $pMcpDis '.claude\settings.local.json') '{"deniedMcpServers":[{"serverName":"Graphify-mcp"}]}'
+    $r = Fire -Cwd $pMcpDis -HookPath $GraphHook -RawStdin (@{ session_id = 'gmcp-dis'; cwd = $pMcpDis; hook_event_name = 'SessionStart' } | ConvertTo-Json)
+    Check 'V102 locally disabled Graphify-mcp falls back to CLI wording only' ($r.Out -notlike '*Graphify-mcp*' -and $r.Out -like '*graphify query*') $r.Out
+
+    # =====================================================================
     Write-Host '--- Graph-Read-Check: Windows PowerShell 5.1 host ---' -ForegroundColor Cyan
     $r = Fire -Cwd $proj4 -HookPath $GraphHook -Exe 'powershell.exe' -RawStdin (@{ session_id = 'graph-host51'; cwd = $proj4; hook_event_name = 'SessionStart' } | ConvertTo-Json)
     Check '5.1 host: emits cleanly' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*Graph-Read-Check: advisory graphify-out/graph.json*') $r.Out

@@ -78,10 +78,53 @@ function Test-GraphMissesMarkdown {
 $markdownSetupLine = '- Missing ignored Markdown: graphify-markdown.md FULL -> graphify extract . --no-gitignore --code-only -> graphify update .'
 $missesMarkdown = Test-GraphMissesMarkdown -Root $cwd
 
+$script:GraphifyMcpReadPattern = '(?i)"(?:name|tool_name)"[ \t]*:[ \t]*"mcp__Graphify[-_]?mcp__(?:query_graph|get_node|get_neighbors|get_community|god_nodes|graph_stats|shortest_path|get_section|list_prs|get_pr_impact|triage_prs)"'
+$script:GraphifyCliReadPattern = '(?i)"command"[ \t]*:[ \t]*"(?:\\.|[^"\\])*\bgraphify(?:\.exe)?[ \t]+(?:query|explain|path)\b(?:\\.|[^"\\])*"'
+
+function Test-GraphifyReadSatisfied {
+    param([AllowEmptyString()][string]$TranscriptPath)
+    if ([string]::IsNullOrWhiteSpace($TranscriptPath)) { return $false }
+    try {
+        if (-not (Test-Path -LiteralPath $TranscriptPath -PathType Leaf)) { return $false }
+        $fi = New-Object System.IO.FileInfo($TranscriptPath)
+        if ($fi.Length -le 0) { return $false }
+        $maxTail = 524288
+        $fs = [System.IO.File]::Open($fi.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            $toRead = [int][Math]::Min([long]$maxTail, $fi.Length)
+            if ($fi.Length -gt $toRead) { [void]$fs.Seek($fi.Length - $toRead, [System.IO.SeekOrigin]::Begin) }
+            $buf = New-Object byte[] $toRead
+            $read = 0
+            while ($read -lt $toRead) {
+                $n = $fs.Read($buf, $read, $toRead - $read)
+                if ($n -le 0) { break }
+                $read += $n
+            }
+            $raw = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+        }
+        finally { $fs.Dispose() }
+        return ([regex]::IsMatch($raw, $script:GraphifyMcpReadPattern) -or [regex]::IsMatch($raw, $script:GraphifyCliReadPattern))
+    }
+    catch { return $false }
+}
+
+$graphifyMcpDisabled = $false
+if (Get-Command Get-ProjectDisabledMcpServers -ErrorAction SilentlyContinue) {
+    $disabledServers = Get-ProjectDisabledMcpServers -ProjectRoot $cwd
+    if (Get-Command Test-McpServerDisabled -ErrorAction SilentlyContinue) {
+        $graphifyMcpDisabled = Test-McpServerDisabled -DisabledSet $disabledServers -Name 'Graphify-mcp'
+    }
+}
+$queryLine = if ($graphifyMcpDisabled) {
+    '- graphify query "<question>" | graphify path "<A>" "<B>" | graphify explain "<concept>"'
+} else {
+    '- Graphify-mcp (query_graph/get_section/shortest_path/get_node/get_pr_impact) first, or CLI: graphify query "<question>" | graphify path "<A>" "<B>" | graphify explain "<concept>"'
+}
+
 # Reminder for the graph-EXISTS case (read the graph; do not re-browse the tree).
 $haveGraphNote = @(
     'Graph-Read-Check: advisory graphify-out/graph.json; broad architecture/call/impact/refactor: scoped graph first.',
-    '- graphify query "<question>" | graphify path "<A>" "<B>" | graphify explain "<concept>"',
+    $queryLine,
     '- Source-confirm; small/docs/config/secrets exempt.',
     'Both: CMM code/Graphify docs-media-cross-cut; covered changes: graphify update .'
 ) -join "`n"
@@ -107,6 +150,7 @@ if (-not $relevant) { exit 0 }
 
 # Choose the note and a graph token (part of the fingerprint) by graph state.
 if ($graphExists) {
+    if (Test-GraphifyReadSatisfied -TranscriptPath ([string](Get-Field $hookInput 'transcript_path'))) { exit 0 }
     $note = $haveGraphNote
     $graphToken = 'g:' + (Get-Item -LiteralPath $graphPath -Force).LastWriteTimeUtc.Ticks + '|md:' + $missesMarkdown
 }

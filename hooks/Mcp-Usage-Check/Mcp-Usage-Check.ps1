@@ -78,7 +78,7 @@ if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'SessionStart' }
 if ($eventName -notin @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Stop', 'SubagentStop')) { exit 0 }
 if ($eventName -eq 'PreToolUse') {
     $preToolName = [string](Get-Field $hookInput 'tool_name')
-    if ($preToolName -notmatch '(?i)^(?:mcp__(?:Scrapling[-_]?Server|plugin_slint_slint-docs__|Numera-Gen-mcp__|(?:plugin_[A-Za-z0-9_.\-]*_)?(?:playwright|rust[-_]?anything|cloudflare)|[A-Za-z0-9_.\-]*computer[-_]?use)|computer$|Edit$|Write$|MultiEdit$)') { exit 0 }
+    if ($preToolName -notmatch '(?i)^(?:mcp__(?:Scrapling[-_]?Server|plugin_slint_slint-(?:docs|preview)__|Numera-Gen-mcp__|(?:plugin_[A-Za-z0-9_.\-]*_)?(?:playwright|rust[-_]?anything|cloudflare)|[A-Za-z0-9_.\-]*computer[-_]?use)|computer$|Edit$|Write$|MultiEdit$)') { exit 0 }
 }
 
 # A Stop hook that re-fires on its own block is the classic hook loop; the
@@ -192,7 +192,7 @@ if ($eventName -eq 'PreToolUse') {
     $carry = Get-CarryoverText $hookInput
     if ($carry -ne '') { [void]$preNotes.Add($carry) }
     if (Get-Command Get-ConnectorPreToolNotes -ErrorAction SilentlyContinue) {
-        $preDisabledMcp = if ($preToolName -match '(?i)^mcp__(?:plugin_slint_slint-docs|Numera-Gen-mcp)__' -and (Get-Command Get-ProjectDisabledMcpServers -ErrorAction SilentlyContinue)) { Get-ProjectDisabledMcpServers -ProjectRoot $cwd }
+        $preDisabledMcp = if ($preToolName -match '(?i)^mcp__(?:plugin_slint_slint-(?:docs|preview)|Numera-Gen-mcp)__' -and (Get-Command Get-ProjectDisabledMcpServers -ErrorAction SilentlyContinue)) { Get-ProjectDisabledMcpServers -ProjectRoot $cwd }
         $preTail = [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput))
         foreach ($pn in @(Get-ConnectorPreToolNotes -ToolName $preToolName -ToolInput (Get-Field $hookInput 'tool_input') -RawText $preTail -DisabledServers $preDisabledMcp)) {
             $tok = $(if ($pn.StartsWith('DESKTOP ROUTE:')) { 'desktop-route' } else { 'pairing|' + $pn.Split(':')[0] })
@@ -213,8 +213,8 @@ if ($eventName -eq 'UserPromptSubmit') {
     # (sessionId, prompt) repeat stays quiet.
     $disabledMcp = if (Get-Command Get-ProjectDisabledMcpServers -ErrorAction SilentlyContinue) { Get-ProjectDisabledMcpServers -ProjectRoot $cwd } else { $null }
     $triggerPrompt = $(if ($prompt -match $script:TextOnlyPromptPattern) { '' } else { $prompt })
-    $rawTriggerLine = Get-ConnectorTriggerLine -Prompt $triggerPrompt -DisabledServers $disabledMcp
-    $curTriggers = Get-ConnectorTriggerKeys -Prompt $triggerPrompt -DisabledServers $disabledMcp
+    $rawTriggerLine = Get-ConnectorTriggerLine -Prompt $triggerPrompt -DisabledServers $disabledMcp -ProjectRoot $cwd
+    $curTriggers = Get-ConnectorTriggerKeys -Prompt $triggerPrompt -DisabledServers $disabledMcp -ProjectRoot $cwd
     $rawDisabledNote = if (Get-Command Get-DisabledConnectorPromptAdvisory -ErrorAction SilentlyContinue) { Get-DisabledConnectorPromptAdvisory -Prompt $triggerPrompt -DisabledServers $disabledMcp } else { '' }
     $promptHash = Get-ShortHash ($sessionId + '|' + $prompt)
     $sameTriggerPrompt = $false

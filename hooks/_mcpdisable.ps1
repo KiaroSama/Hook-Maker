@@ -15,7 +15,7 @@ $script:PluginMcpConnectorMap = @{
     'chrome-devtools-mcp@chrome-devtools-plugins' = 'chrome-devtools'
     'claude-bughunter@elementalsouls'           = 'hackerone'
     'context-mode@context-mode'                 = 'context-mode'
-    'slint@slint'                               = 'slint-docs'
+    'slint@slint'                               = @('slint-docs', 'slint-preview')
 }
 
 function ConvertFrom-McpDisableJson {
@@ -157,7 +157,11 @@ function Get-ProjectDisabledMcpServers {
 
     foreach ($pk in $script:PluginMcpConnectorMap.Keys) {
         if ($pluginState.ContainsKey($pk) -and (-not $pluginState[$pk])) {
-            [void]$disabled.Add($script:PluginMcpConnectorMap[$pk])
+            foreach ($conn in @($script:PluginMcpConnectorMap[$pk])) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$conn)) {
+                    [void]$disabled.Add(([string]$conn).Trim())
+                }
+            }
         }
     }
 

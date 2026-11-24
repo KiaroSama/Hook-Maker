@@ -229,6 +229,8 @@ try {
     Set-Mock -RunJson '[{"databaseId":11,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $sha
     $r = Fire -HookPath $CiHook -Cwd $ci -EventName 'Stop'
     Check 'legacy verified state cannot bypass a fresh failed run' ($r.Out -match '"systemMessage"' -and $r.Out -match 'FAILED') ([string]$r.Out)
+    Check 'V102 failed CI advisory requires waiting for all jobs and fixing all failures in one batch' (
+        $r.Out -match 'Wait until ALL jobs finish' -and $r.Out -match 'collect every failure' -and $r.Out -match 'fix all in one batch') ([string]$r.Out)
 
     # pending -> block
     $ci2 = New-GitRepo 'ci2'
@@ -238,7 +240,7 @@ try {
     Check 'pending checks -> advisory with wait guidance' ($r.Out -match '"systemMessage"' -and $r.Out -match 'queued/in-progress' -and $r.Out -match 'gh run list --commit')
     Check 'pending CI keeps a watcher on all jobs for GitHub and local waits' (
         $r.Out -match 'silent background watcher until ALL jobs finish' -and $r.Out -match 'no mid-wait updates' -and
-        $r.Out -match 'GitHub CI and local CI/test runs') $r.Out
+        $r.Out -match 'GitHub CI and local CI/test runs' -and $r.Out -match 'piecemeal fixes before all finish' -and $r.Out -match 'batch-fix all failures once') $r.Out
     $r = Fire -HookPath $CiHook -Cwd $ci2 -EventName 'Stop'
     Check 'unchanged pending evidence does not recursively reblock the same session' ($r.Out -eq '' -and $r.Exit -eq 0) ('exit=' + $r.Exit + ' stdout=' + $r.Out + ' stderr=' + $r.Err)
     $r = Fire -HookPath $CiHook -Cwd $ci2 -EventName 'Stop' -Extra @{ session_id = 'pending-fresh-session' }

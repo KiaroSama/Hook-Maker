@@ -238,6 +238,9 @@ try {
     # complete coordinated Hook Change Gate/README owners, not an inline dump.
     Check 'E-10: all affected doc contracts route to complete owners BEFORE review' (
         $r.Out -match 'BEFORE review: global-hook-rules.md Hook Change Gate/global-repository-rules.md README FULL, all affected contracts') $r.Out
+    Check 'V102 README freshness advisory notes live/tag-linked badges and Author -> License -> Donate order' (
+        $r.Out -match 'live/tag-linked section-synced badges' -and $r.Out -match 'zero private-repo leak' -and
+        $r.Out -match '## Author -> brief ## License -> ## Donate \(last\)') $r.Out
     Check 'E-10: internal-only changes still clear via -Result NoUpdate (no churn requirement)' ($r.Out -match '-Result NoUpdate') $r.Out
 
     # =====================================================================
