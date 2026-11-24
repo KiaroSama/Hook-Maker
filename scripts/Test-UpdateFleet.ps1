@@ -211,6 +211,12 @@ try {
     Check '-Compare alone on a clean fleet finds nothing and exits 0' (
         $run.Exit -eq 0 -and $run.Out -match 'COMPARE .*registrations=4 .*missing=0 different=0 errors=0 unreachable=1' -and
         -not $run.Out.Contains('COUNTS ')) $run.Out
+    $extra = Join-Path $p2 '.claude\hooks\Hook-Maker\Fleet-Alpha\_packagebuild.ps1'
+    [IO.File]::WriteAllText($extra, '# retired fixture companion')
+    $run = Invoke-Fleet @('-Compare')
+    Check 'P2-6 -Compare detects an unexpected managed file with no other drift' (
+        $run.Exit -eq 1 -and $run.Out -match 'COMPARE .*missing=0 different=1 ' -and $run.Out.Contains($p2)) $run.Out
+    [IO.File]::Delete($extra)
     $altered = Join-Path $p2 '.claude\hooks\Hook-Maker\Fleet-Alpha\Fleet-Alpha.ps1'
     [System.IO.File]::AppendAllText($altered, "# edited in place`n")
     $run = Invoke-Fleet @('-Compare')
@@ -310,6 +316,45 @@ try {
         ($tmoValues -join ',') + ' ' + $run.Out + $run.Err)
     $run = Invoke-Fleet @('-WhatIf', '-OnlyProject', 'timeout fleet')
     Check 'after the raise the registration is current' ((Get-Counts $run.Out)['current'] -eq 1) $run.Out
+
+    # Global paths are bound to a disposable HOME before either entry can run.
+    $fakeHome = Join-Path $Work 'global-fixture'
+    $engineProject = Join-Path $Work 'project-fixture'
+    [void][IO.Directory]::CreateDirectory($fakeHome)
+    [void][IO.Directory]::CreateDirectory($engineProject)
+    $engineConfig = Join-Path $Work 'sync-hooks.json'
+    $engineRoute = @{ id = 'fixture'; source = @{ name = 'Fixture source'; root = $fakeHome }; destination = @{ name = 'Fixture project'; root = $engineProject } }
+    $engineProfile = @{ id = 'fleet-no-copy'; name = 'Fleet no copy'; enabled = $true; routes = @($engineRoute) }
+    Write-Utf8 $engineConfig ((@{ version = 2; profiles = @($engineProfile) }) | ConvertTo-Json -Depth 8)
+    $globalFixture = Join-Path $Work 'engine-fixture.ps1'
+    Write-Utf8 $globalFixture @'
+param($SafeHome,$Project,$Config,$Installer,$Fleet)
+Set-Variable -Name HOME -Scope Global -Value $SafeHome -Force
+if ($HOME -cne $SafeHome -or -not [IO.Directory]::Exists($HOME)) { throw 'Global test home not isolated.' }
+$env:USERPROFILE = $SafeHome
+& $Installer -Profile 'fleet-no-copy' -ConfigPath $Config -Events SessionStart -Clients @('claude','codex') *> $null
+& $Installer -Profile 'fleet-no-copy' -ConfigPath $Config -Events SessionStart -Clients @('claude','codex') -TargetProject $Project *> $null
+foreach ($scope in @($SafeHome,$Project)) {
+    foreach ($client in @('.claude','.codex')) {
+        $runtime = Join-Path $scope ($client + '\hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync')
+        if (-not [IO.File]::Exists((Join-Path $runtime '_syncpaths.ps1'))) { throw 'Expected engine test runtime is missing.' }
+        [IO.File]::WriteAllText((Join-Path $runtime '_packagebuild.ps1'), '# fixture old build')
+        [IO.File]::WriteAllText((Join-Path $runtime '_packageguard.ps1'), '# fixture old guard')
+    }
+}
+& $Fleet -Apply -Compare -ConfigPath $Config
+'@
+    $fixtureOut = Join-Path $Work 'engine-fixture.out'
+    $fixtureErr = Join-Path $Work 'engine-fixture.err'
+    $fixture = Start-BoundedProcess -FilePath $PwshPath -WorkingDirectory $SafeCwd -ArgumentList @('-NoProfile','-File',$globalFixture,$fakeHome,$engineProject,$engineConfig,$InstallScript,$Fleet) -RedirectStandardOutput $fixtureOut -RedirectStandardError $fixtureErr -TimeoutMs 300000
+    Check 'P2-6 -Apply repairs extras-only engine runtimes in both scopes and clients' ($fixture.ExitCode -eq 0 -and [IO.File]::ReadAllText($fixtureOut) -match 'different=0') ([IO.File]::ReadAllText($fixtureOut) + [IO.File]::ReadAllText($fixtureErr))
+    foreach ($scope in @($fakeHome,$engineProject)) {
+        foreach ($client in @('.claude','.codex')) {
+            $runtime = Join-Path $scope ($client + '\hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync')
+            Check ('P2-6 replacement removes both copy companions from ' + (Split-Path -Leaf $scope) + '/' + $client) (
+                [IO.File]::Exists((Join-Path $runtime '_syncpaths.ps1')) -and -not [IO.File]::Exists((Join-Path $runtime '_packagebuild.ps1')) -and -not [IO.File]::Exists((Join-Path $runtime '_packageguard.ps1')))
+        }
+    }
 }
 finally {
     if ($null -ne $interrupted -and -not $interrupted.HasExited) { Stop-Process -Id $interrupted.Id -Force -ErrorAction SilentlyContinue }

@@ -190,10 +190,39 @@ $selectedMesh=@($meshRecords|Where-Object{$_.targetProjectRoot-eq$meshProjects[0
 . (Join-Path $ScriptRoot '_uninstallsyncstate.ps1')
 $stateRoute=@($meshRoutes.ToArray()|Where-Object{$_.id-eq'r0-1'})[0]
 $stateEntry=@(Get-UninstallSyncStatePlan -Routes @($stateRoute) -Profile 'complete-mesh')[0]
-[void][IO.Directory]::CreateDirectory((Split-Path -Parent $stateEntry.State))
-[void][IO.Directory]::CreateDirectory($stateEntry.Inbox)
-Write-Utf8 $stateEntry.State (([pscustomobject]@{profileId='complete-mesh';routeId='r0-1';sourceRoot=$meshProjects[0]})|ConvertTo-Json)
-$pendingSentinel=Join-Path $stateEntry.Inbox 'review-sentinel.txt';Write-Utf8 $pendingSentinel 'review-evidence'
+$currentState=$stateEntry.CurrentState
+$legacyState=$currentState -replace '\.v3\.json$','.json'
+$legacyStamp=[IO.Path]::ChangeExtension($legacyState,'.scan')
+$legacyKey=[IO.Path]::GetFileNameWithoutExtension($legacyState)
+$legacyInbox=Join-Path $stateEntry.SyncRoot ('inbox/'+$legacyKey)
+[void][IO.Directory]::CreateDirectory((Split-Path -Parent $currentState))
+[void][IO.Directory]::CreateDirectory($legacyInbox)
+$routeStateJson=([pscustomobject]@{profileId='complete-mesh';routeId='r0-1';sourceRoot=$meshProjects[0]})|ConvertTo-Json
+Write-Utf8 $legacyState '{'
+Write-Utf8 $legacyStamp 'legacy scan'
+Write-Utf8 $currentState $routeStateJson
+$currentStamp=[IO.Path]::ChangeExtension($currentState,'.scan');Write-Utf8 $currentStamp 'scan'
+$pendingSentinel=Join-Path $legacyInbox 'review-sentinel.txt';Write-Utf8 $pendingSentinel 'review-evidence'
+$legacyTarget=Join-Path $Work 'legacy-junction-target'
+[void][IO.Directory]::CreateDirectory($legacyTarget)
+$legacyLink=Join-Path $legacyInbox 'redirected'
+New-Item -ItemType Junction -Path $legacyLink -Target $legacyTarget | Out-Null
+try {
+    $legacyDry=Invoke-UninstallProcess -RecordId $selectedMesh.id -Complete -WhatIf
+    Check 'Complete preflight ignores truncated legacy JSON and a redirected inbox' ([string]$legacyDry.Result.overall-eq'ok') $legacyDry.Err
+}
+finally { [IO.Directory]::Delete($legacyLink) }
+# Keep ordinary legacy data in place for the actual uninstall below.
+Write-Utf8 $legacyState $routeStateJson
+$legacyBefore=[IO.File]::ReadAllBytes($legacyState)
+[IO.File]::Delete($currentStamp)
+[void][IO.Directory]::CreateDirectory($currentStamp)
+try {
+    $directoryDry=Invoke-UninstallProcess -RecordId $selectedMesh.id -Complete -WhatIf
+    Check 'Complete preflight refuses a directory at the exact v3 scan leaf' ([string]$directoryDry.Result.overall-ne'ok') $directoryDry.Err
+}
+finally { [IO.Directory]::Delete($currentStamp) }
+Write-Utf8 $currentStamp 'scan'
 $meshDry=Invoke-UninstallProcess -RecordId $selectedMesh.id -Complete -WhatIf
 Check 'mesh complete dry run validates without retirement' ([string]$meshDry.Result.overall-eq'ok'-and @((Read-JsonFile $meshConfig).profiles[0].routes).Count-eq6) $meshDry.Err
 $peerRecord=@($meshRecords|Where-Object{$_.targetProjectRoot-eq$meshProjects[1]})[0]
@@ -226,15 +255,16 @@ Check 'manifest publication failure retains selected tracking' ([string]$manifes
 Check 'manifest publication failure restores routing preimages' ((Test-BytesEqual ([IO.File]::ReadAllBytes($meshConfig)) $configPreimage)-and(Test-BytesEqual ([IO.File]::ReadAllBytes($peerConfig)) $peerOriginal))
 $restoredPeer=@((Read-InstallRegistry $ToolRoot).installs|Where-Object{$_.id-eq$peerRecord.id})[0]
 Check 'manifest publication failure restores peer recorded hashes' (($restoredPeer|ConvertTo-Json -Depth 50 -Compress)-ceq($peerRecord|ConvertTo-Json -Depth 50 -Compress))
-$heldRoute=[IO.File]::Open($stateEntry.State,'Open','Read','Read')
+$heldRoute=[IO.File]::Open($currentState,'Open','Read','Read')
 try{$blockedRetirement=Invoke-UninstallProcess -RecordId $selectedMesh.id -Complete}finally{$heldRoute.Dispose()}
-Check 'locked sync state retains retry journal and tracking' ([string]$blockedRetirement.Result.overall-eq'failed'-and(Test-Path -LiteralPath $stateEntry.State)-and @(Get-RecordsFor 'Cross-Project-.ai-Knowledge-Sync'|Where-Object{$_.id-eq$selectedMesh.id}).Count-eq1)
+Check 'locked sync state retains retry journal and tracking' ([string]$blockedRetirement.Result.overall-eq'failed'-and(Test-Path -LiteralPath $currentState)-and @(Get-RecordsFor 'Cross-Project-.ai-Knowledge-Sync'|Where-Object{$_.id-eq$selectedMesh.id}).Count-eq1)
 $meshRemoval=Invoke-UninstallProcess -RecordId $selectedMesh.id -Complete
 if([string]$meshRemoval.Result.overall-ne'ok'){Write-Host ($meshRemoval.Result|ConvertTo-Json -Depth 6 -Compress);Write-Host $meshRemoval.Err}
 Check 'mesh complete removal succeeds' ([string]$meshRemoval.Result.overall-eq'ok') ($meshRemoval.Result|ConvertTo-Json -Depth 5)
-Check 'selected route state and inbox are no longer active' (-not(Test-Path -LiteralPath $stateEntry.State)-and-not(Test-Path -LiteralPath $stateEntry.Inbox))
-$retiredSentinels=@(Get-ChildItem -LiteralPath (Join-Path $stateEntry.SyncRoot 'retired') -Filter 'review-sentinel.txt' -Recurse -File)
-Check 'pending review evidence survives in retired recovery' ($retiredSentinels.Count-eq1-and[IO.File]::ReadAllText($retiredSentinels[0].FullName,[Text.Encoding]::UTF8)-ceq'review-evidence')
+Check 'selected v3 JSON and scan stamp are no longer active' (-not(Test-Path -LiteralPath $currentState)-and-not(Test-Path -LiteralPath $currentStamp))
+Check 'Complete leaves legacy JSON, stamp and inbox bytes in place' ((Test-Path -LiteralPath $legacyState) -and (Test-BytesEqual ([IO.File]::ReadAllBytes($legacyState)) $legacyBefore) -and [IO.File]::ReadAllText($legacyStamp)-ceq'legacy scan' -and [IO.File]::ReadAllText($pendingSentinel)-ceq'review-evidence')
+$retiredFiles=@(Get-ChildItem -LiteralPath (Join-Path $stateEntry.SyncRoot 'retired') -Recurse -File)
+Check 'recovery contains only the two exact owned v3 leaves' ($retiredFiles.Count-eq2 -and @($retiredFiles|Where-Object Name -like '*.v3.json-*').Count-eq1 -and @($retiredFiles|Where-Object Name -like '*.v3.scan-*').Count-eq1)
 $afterMesh=Read-JsonFile $meshConfig
 Check 'canonical mesh retains only the two peer routes' (@($afterMesh.profiles[0].routes).Count-eq2 -and @($afterMesh.profiles[0].routes|Where-Object{$_.id-in@('r1-2','r2-1')}).Count-eq2)
 Check 'unrelated profile remains' (@($afterMesh.profiles|Where-Object{$_.id-eq'unrelated-profile'}).Count-eq1)
@@ -264,7 +294,7 @@ foreach($functionName in @('Get-StringHash','Get-PropertyValue','Get-EndpointRoo
 }
 $liveContext=[pscustomobject]@{matchedDestinationRoot=$meshProjects[1];profileId='complete-mesh';routeId='r2-1';route=@($meshRoutes.ToArray()|Where-Object{$_.id-eq'r2-1'})[0]}
 $staleContext=[pscustomobject]@{matchedDestinationRoot=$meshProjects[1];profileId='complete-mesh';routeId='r0-1';route=$stateRoute}
-$routeLock=Enter-RouteStateLock $stateEntry.State
+$routeLock=Enter-RouteStateLock $currentState
 try{
     Check 'remaining peer route is accepted under the lifecycle lock' (Test-SyncRouteCurrent $liveContext)
     Check 'retired route is rejected from an old resolved context' (-not(Test-SyncRouteCurrent $staleContext))

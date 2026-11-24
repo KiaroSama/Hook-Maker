@@ -539,7 +539,7 @@ function Invoke-CreateGroup {
     $stopwatch.Stop()
     Write-PhaseHeader 'Completed' $C.Done '='
     Write-Host (Get-Painted '  Restart the Claude/Codex clients and review /hooks inside each project.' $C.White)
-    Write-Host (Get-Painted '  Opening any of these projects now reviews the other projects'' knowledge first.' $C.White)
+    Write-Host (Get-Painted '  The hook lists changed source notes for read-only review. It does not copy files.' $C.White)
     Write-NoteLine '  Codex: run /hooks in each project and trust the new command before it runs.'
     if ($null -ne $script:LogPath) {
         Write-Host (Get-Painted ('  Log: ' + $script:LogPath) $C.Dim)

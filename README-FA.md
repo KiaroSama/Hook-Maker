@@ -6,6 +6,7 @@
 
 [![GitHub Actions CI workflow on main](https://img.shields.io/badge/CI-GitHub%20Actions-16a34a)](.github/workflows/ci.yml)
 [![Proprietary software license](https://img.shields.io/badge/license-Proprietary-2563eb)](LICENSE)
+[![Release v1.0.0](https://img.shields.io/badge/release-v1.0.0-c2415b)](https://github.com/KiaroSama/Hook-Maker/releases/tag/v1.0.0)
 [![PowerShell 7.6.10 and Windows PowerShell 5.1.26100.10068 measured locally](https://img.shields.io/badge/PowerShell-7.6.10%20%7C%205.1.26100.10068-8b5cf6)](.github/workflows/ci.yml)
 [![Runs on Windows](https://img.shields.io/badge/platform-Windows-0891b2)](.github/workflows/ci.yml)
 [![Launch the setup wizard with run.ps1](https://img.shields.io/badge/install-PowerShell%20wizard-4f46e5)](run.ps1)
@@ -13,7 +14,7 @@
 [![Measured size of tracked repository files in decimal megabytes](https://img.shields.io/badge/repo%20size-7.8%20MB-ca8a04)](README.md)
 [![Registers hooks for Claude Code and Codex CLI](https://img.shields.io/badge/clients-Claude%20Code%20%7C%20Codex%20CLI-b45309)](docs/HOOKS.md)
 [![Shipped hook count includes 30 packages and the sync engine](https://img.shields.io/badge/hooks-31%20shipped-15803d)](docs/HOOKS.md)
-[![Cross-project knowledge sync includes a configurable manifest](https://img.shields.io/badge/sync-Knowledge%20sync-0d9488)](sync-hooks.example.json)
+[![Cross-project knowledge sync lists changed source notes](https://img.shields.io/badge/sync-Knowledge%20sync-0d9488)](sync-hooks.example.json)
 [![Read the registry and sync transaction contracts](https://img.shields.io/badge/registry-Transactional%20updates-334155)](docs/STORAGE-TRANSACTIONS.md)
 [![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate)
 
@@ -23,7 +24,7 @@
 
 ## Hook Maker چه می‌کند؟
 
-‏⁧۳۱ هوک همراه Hook Maker عرضه می‌شود: ۳۰ بستهٔ هوک و یک موتور همگام‌سازی دانش میان پروژه‌ها. ابزار راه‌اندازی هوک‌های انتخابی را در پوشهٔ هر پروژه نصب می‌کند و آن‌ها را برای یک یا هر دو کلاینت ثبت می‌کند. موتور همگام‌سازی نسخهٔ تغییرکردهٔ یادداشت‌ها را برای بررسی آماده می‌کند؛ انتخاب مطالبی که وارد پروژهٔ مقصد می‌شوند با عامل همان پروژه است.⁩
+‏⁧۳۱ هوک همراه Hook Maker عرضه می‌شود: ۳۰ بستهٔ هوک و یک موتور همگام‌سازی دانش میان پروژه‌ها. ابزار راه‌اندازی هوک‌های انتخابی را در پوشهٔ هر پروژه نصب می‌کند و آن‌ها را برای یک یا هر دو کلاینت ثبت می‌کند. موتور همگام‌سازی مسیر یادداشت‌های مارک‌داون تغییرکرده را نشان می‌دهد. عامل پروژهٔ مقصد همان فایل‌ها را می‌خواند و تجربه‌های قابل استفاده را در حافظهٔ خودش ثبت می‌کند.⁩
 
 ## شروع کار
 
@@ -46,7 +47,7 @@
 
 ‏⁧هر بسته یک `.env.example` دارد. در پوشهٔ هوک از آن یک کپی با نام `.env` بسازید و `TARGET_PROJECTS` (مسیرها با جداکنندهٔ `;`)، `EVENTS` و `CLIENTS` (`Both`، `Claude` یا `Codex`) را تنظیم کنید. در منو `1` و بعد `3` را بزنید تا نصب از روی تنظیمات و بدون پرسش انجام شود. فایل تنظیمات محلی را وارد Git نکنید.⁩
 
-‏⁧برای همگام‌سازی، یک گروه با دست‌کم دو مسیر ریشه بسازید. ابزار راه‌اندازی مسیرهای `sync-hooks.json` را طوری تنظیم می‌کند که همهٔ اعضا بتوانند تغییرات را برای هم بفرستند. فایل‌های آمادهٔ بررسی فقط پیشنهادند و یادداشت‌های مقصد را خودکار عوض نمی‌کنند. [نمونهٔ تنظیمات](sync-hooks.example.json) و [راهنمای همگام‌سازی](docs/OPERATIONS-FA.md#sync-config) را ببینید.⁩
+‏⁧برای همگام‌سازی، یک گروه با دست‌کم دو مسیر ریشه بسازید. ابزار راه‌اندازی مسیرهای `sync-hooks.json` را طوری تنظیم می‌کند که هر عضو مسیر یادداشت‌های تغییرکردهٔ دیگر اعضا را ببیند. هوک فایلی کپی نمی‌کند و چیزی در پروژهٔ منبع نمی‌نویسد. [نمونهٔ تنظیمات](sync-hooks.example.json) و [راهنمای همگام‌سازی](docs/OPERATIONS-FA.md#sync-config) را ببینید.⁩
 
 ## مدیریت هوک‌های نصب‌شده
 

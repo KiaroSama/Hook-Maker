@@ -1,170 +1,76 @@
-# Test-Engine.ps1 scenario block: OWNED PACKAGE GENERATIONS (L08).
-#
-# Four properties, each one a defect that was reproducible before it:
-#   1. CONTAINMENT runs from the TRUSTED CONFIGURED DESTINATION down, not just
-#      from the inbox: a junction on an internal staging ancestor redirected
-#      every write and delete out of the project while each path still looked
-#      contained.
-#   2. A replacement STAGES A NEW GENERATION and only then retires the old one.
-#      The old code deleted the whole inbox before the first byte was copied, so
-#      a failed copy left the state record pointing at files that no longer
-#      existed - announced as a dead path on every event afterwards, and
-#      un-acknowledgeable for ever.
-#   3. STAGED BYTES ARE VERIFIED against the snapshot that described them.
-#   4. The ACK is bound to the GENERATION ON DISK, not to a matching string.
-#
-# Dot-sourced by Test-Engine.ps1 into its scope (uses its $Work, Check,
-# New-Project, Fire, Write-Config, New-Route, New-Endpoint helpers) - not a
-# standalone suite.
+# Dot-sourced by Test-Engine.ps1; both projects are owned fixtures.
+$src = New-Project 'Source with spaces'
+$dst = New-Project 'Destination with spaces'
+$srcMemory = Join-Path $src '.ai'
+$dstSync = Join-Path $dst '.ai\.cross-project-sync'
+$cfg = Join-Path $Work 'cfg-source-only.json'
+$route = New-Route 'source-only' (New-Endpoint 'Src' $src) (New-Endpoint 'Dst' $dst)
+Write-Config -Path $cfg -Routes @($route) -Extensions @('.md', '.txt')
+$utf8 = [Text.UTF8Encoding]::new($false)
+$unicodeName = 'LESSON [' + [char]0x06cc + '].md'
+$eligible = Join-Path $srcMemory $unicodeName
+[IO.File]::WriteAllText($eligible, 'SOURCE-BYTES-NOT-IN-NOTICE', $utf8)
+$unchanged = Join-Path $srcMemory 'UNCHANGED.md'
+[IO.File]::WriteAllText($unchanged, 'baseline', $utf8)
+$private = @('secrets.md', '.ignoreme', 'explain-AI.md', 'token_notes.md', '.cross-project-sync\old.md', 'logs\log.md', 'private\anything.md', 'notes.txt')
+foreach ($relative in $private) {
+    $file = Join-Path $srcMemory $relative
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $file))
+    [IO.File]::WriteAllText($file, 'private fixture', $utf8)
+}
+$outside = New-Project 'Outside source boundary'
+[IO.File]::WriteAllText((Join-Path $outside '.ai\EXTERNAL.md'), 'external fixture', $utf8)
+$link = Join-Path $srcMemory 'external-link'
+New-Item -ItemType Junction -Path $link -Target (Join-Path $outside '.ai') -ErrorAction Stop | Out-Null
+try {
+    $result = Fire -Cwd $dst -Config $cfg -SessionId 'migration'
+    $notice = Get-SyncNotice $result.Out
+    Check 'source review names Unicode and brackets without changing the path' ($notice.Contains('"' + $eligible + '"')) $notice
+    Check 'source review does not disclose protected paths, link targets or file contents' (-not ($notice -match 'secrets\.md|\.ignoreme|explain-AI\.md|token_notes\.md|old\.md|log\.md|anything\.md|notes\.txt|EXTERNAL\.md|SOURCE-BYTES')) $notice
+    Check 'source review instructs destination topic-first, router-last and read-only use' ($notice -match 'memory topic files first, then memory\.md' -and $notice -match 'Never copy a file or write to the source') $notice
+    Check 'notice left the source file byte-for-byte unchanged' ([IO.File]::ReadAllText($eligible, $utf8) -ceq 'SOURCE-BYTES-NOT-IN-NOTICE')
 
-    # =====================================================================
-    Write-Host '--- owned package generations: containment, verified staging, bound ACK ---' -ForegroundColor Cyan
+    $stateFile = Get-ChildItem -LiteralPath (Join-Path $dstSync 'state') -Filter '*.json' | Select-Object -First 1
+    $state = Get-Content -LiteralPath $stateFile.FullName -Raw -Encoding utf8 | ConvertFrom-Json
+    $oldCmd = Get-SyncAckCommand $result.Out
+    $inbox = Join-Path $dstSync 'inbox\old-route\old-generation'
+    [void][IO.Directory]::CreateDirectory($inbox)
+    $legacyCopy = Join-Path $inbox 'fake.md'
+    [IO.File]::WriteAllText($legacyCopy, 'legacy payload', $utf8)
+    $state.version = 2
+    $state.lastAppliedFiles = @($state.pending.sourceFiles | Where-Object path -EQ 'UNCHANGED.md')
+    $state.pending = [pscustomobject]@{ packageRoot = $inbox; manifestPath = (Join-Path $inbox 'old-manifest.json'); filesRoot = $outside; sourceContentFingerprint = ('a' * 64) }
+    $legacyStatePath = $stateFile.FullName -replace '\.v3\.json$', '.json'
+    [IO.File]::Delete($stateFile.FullName)
+    $legacyBytes = $state | ConvertTo-Json -Depth 8
+    [IO.File]::WriteAllText($legacyStatePath, $legacyBytes, $utf8)
+    $oldAck = Run-Acknowledgement -Command $oldCmd
+    Check 'legacy pending acknowledgement asks for a new review' ($oldAck.Exit -ne 0 -and $oldAck.Error -match 'Legacy review') $oldAck.Error
+    $migrated = Fire -Cwd $dst -Config $cfg -SessionId 'migration'
+    $notice = Get-SyncNotice $migrated.Out
+    Check 'legacy pending is replaced even if it used the same session' ($notice.Contains($eligible)) $notice
+    Check 'migration does not re-list previously applied or inbox files' (-not ($notice -match 'UNCHANGED\.md|old-manifest|old-generation')) $notice
+    Check 'legacy inbox content is untouched' ([IO.File]::ReadAllText($legacyCopy, $utf8) -ceq 'legacy payload')
+    Check 'P1-2 legacy state remains byte-for-byte unchanged after v3 publish' ([IO.File]::ReadAllText($legacyStatePath, $utf8) -ceq $legacyBytes)
+    $ack = Run-Acknowledgement -Command (Get-SyncAckCommand $migrated.Out)
+    Check 'migrated review acknowledges against the source' ($ack.Exit -eq 0) $ack.Error
+    $stillThere = @(Get-ChildItem -LiteralPath (Join-Path $dstSync 'inbox') -Recurse -File)
+    Check 'migration and acknowledgement neither add nor delete legacy inbox bytes' ($stillThere.Count -eq 1 -and [IO.File]::ReadAllText($legacyCopy, $utf8) -ceq 'legacy payload')
 
-    # The guard is exercised directly: these are refusals, and a refusal that is
-    # only observed through an end-to-end side effect is indistinguishable from
-    # the operation never being attempted.
-    # _hooklib.ps1 FIRST: the guard calls Normalize-Path and Test-PathInside from
-    # it, and without them every containment answer degrades to "refused" - which
-    # passes every negative assertion below for entirely the wrong reason.
-    . (Join-Path (Split-Path -Parent (Split-Path -Parent $Engine)) '_hooklib.ps1')
-    . (Join-Path (Split-Path -Parent $Engine) '_packageguard.ps1')
+    [IO.File]::Delete($eligible)
+    [IO.File]::SetLastWriteTimeUtc($unchanged, [DateTime]::UtcNow.AddMinutes(-2))
+    $deletion = Fire -Cwd $dst -Config $cfg
+    Check 'deletion and a metadata-only touch are silent' ($deletion.Exit -eq 0 -and [string]::IsNullOrWhiteSpace($deletion.Out)) $deletion.Error
 
-    $guardRoot = Join-Path $Work 'guard'
-    $trusted = Join-Path $guardRoot 'dest'
-    $inbox = Join-Path $trusted '.ai\.cross-project-sync\inbox'
-    $outside = Join-Path $guardRoot 'outside'
-    New-Item -ItemType Directory -Path $inbox, $outside -Force | Out-Null
-    $generation = Join-Path $inbox 'abcdef0123456789'
-    New-Item -ItemType Directory -Path $generation -Force | Out-Null
-
-    Check 'a generation inside the owned inbox, inside the trusted destination, is removable' (
-        Test-OwnedStagingChain -TrustedRoot $trusted -OwnedRoot $inbox -Target $generation) $generation
-    Check 'a target outside the owned inbox is refused' (
-        -not (Test-OwnedStagingChain -TrustedRoot $trusted -OwnedRoot $inbox -Target $outside)) $outside
-    Check 'the inbox root itself is refused unless the caller says it is rebuilding' (
-        -not (Test-OwnedStagingChain -TrustedRoot $trusted -OwnedRoot $inbox -Target $inbox)) $inbox
-    Check 'the inbox root is allowed when the caller IS rebuilding it' (
-        Test-OwnedStagingChain -TrustedRoot $trusted -OwnedRoot $inbox -Target $inbox -AllowRootItself) $inbox
-    Check 'an owned root outside the trusted destination is refused, however contained the target looks' (
-        -not (Test-OwnedStagingChain -TrustedRoot $trusted -OwnedRoot $outside -Target (Join-Path $outside 'gen'))) $outside
-    # A SIBLING whose name merely starts with the trusted root's name is not inside it.
-    Check 'containment compares whole segments (a sibling-prefix destination is not the trusted one)' (
-        -not (Test-OwnedStagingChain -TrustedRoot $trusted -OwnedRoot ($trusted + '2') -Target ($trusted + '2\x'))) ($trusted + '2')
-
-    # THE ANCESTOR JUNCTION. `inbox` itself is the link here: every path below it
-    # still reads as contained, and the old target-to-inbox check passed it.
-    $junctionTrusted = Join-Path $guardRoot 'jdest'
-    $junctionParent = Join-Path $junctionTrusted '.ai\.cross-project-sync'
-    $junctionTarget = Join-Path $guardRoot 'jelsewhere'
-    New-Item -ItemType Directory -Path $junctionParent, $junctionTarget -Force | Out-Null
-    $junctionInbox = Join-Path $junctionParent 'inbox'
-    $junctionMade = $false
+    $redirected = New-Project 'Redirected destination'
+    $redirect = Join-Path $redirected '.ai\.cross-project-sync'
+    New-Item -ItemType Junction -Path $redirect -Target (Join-Path $outside '.ai') -ErrorAction Stop | Out-Null
     try {
-        New-Item -ItemType Junction -Path $junctionInbox -Target $junctionTarget -ErrorAction Stop | Out-Null
-        $junctionMade = $true
+        $redirectCfg = Join-Path $Work 'cfg-redirected.json'
+        Write-Config -Path $redirectCfg -Routes @((New-Route 'redirected' (New-Endpoint 'Src' $src) (New-Endpoint 'Dst' $redirected))) -Extensions @('.md')
+        $refused = Fire -Cwd $redirected -Config $redirectCfg
+        Check 'destination state does not follow a junction' ([string]::IsNullOrWhiteSpace($refused.Out) -and -not (Test-Path -LiteralPath (Join-Path $outside '.ai\state'))) $refused.Error
     }
-    catch { $junctionMade = $false }
-    if ($junctionMade) {
-        $throughLink = Join-Path $junctionInbox 'gen'
-        New-Item -ItemType Directory -Path $throughLink -Force | Out-Null
-        Check 'a junction ON AN INTERNAL STAGING ANCESTOR is refused, not followed' (
-            -not (Test-OwnedStagingChain -TrustedRoot $junctionTrusted -OwnedRoot $junctionInbox -Target $throughLink)) $throughLink
-        Check 'and the deletion that would have followed it is refused too' (
-            -not (Remove-OwnedPackageDirectory -Path $throughLink -OwnedRoot $junctionInbox -TrustedRoot $junctionTrusted)) $throughLink
-        Check 'the directory behind the link is still there (nothing outside the project was touched)' (
-            Test-Path -LiteralPath $throughLink) $throughLink
-    }
-    else {
-        Write-Host '  (skipped: this account cannot create a directory junction)' -ForegroundColor DarkYellow
-    }
-
-    # ---- staged bytes are proven, not assumed ----------------------------
-    $verifyRoot = Join-Path $guardRoot 'verify'
-    New-Item -ItemType Directory -Path $verifyRoot -Force | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $verifyRoot 'a.md'), 'hello', (New-Object System.Text.UTF8Encoding $false))
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $expected = ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes('hello')))).Replace('-', '').ToLowerInvariant()
-    }
-    finally { $sha.Dispose() }
-    $records = @([pscustomobject]@{ path = 'a.md'; sha256 = $expected })
-    Check 'staged bytes that match the snapshot verify' (
-        Test-StagedFilesVerified -FilesRoot $verifyRoot -Records $records) ''
-    [System.IO.File]::WriteAllText((Join-Path $verifyRoot 'a.md'), 'tampered', (New-Object System.Text.UTF8Encoding $false))
-    Check 'staged bytes that changed after the copy do NOT verify' (
-        -not (Test-StagedFilesVerified -FilesRoot $verifyRoot -Records $records)) ''
-    Remove-Item -LiteralPath (Join-Path $verifyRoot 'a.md') -Force
-    Check 'a staged file that is missing does NOT verify' (
-        -not (Test-StagedFilesVerified -FilesRoot $verifyRoot -Records $records)) ''
-
-    # ---- end to end: a second change does not destroy the first review ----
-    $src = New-Project 'PkgSrc'
-    $dst = New-Project 'PkgDst'
-    Set-Content -LiteralPath (Join-Path $src '.ai\LESSON.md') "# one`nfirst" -Encoding utf8
-    $pkgCfg = Join-Path $Work 'cfg-package.json'
-    Write-Config -Path $pkgCfg -Routes @((New-Route 'src-to-dst' (New-Endpoint 'PkgSrc' $src) (New-Endpoint 'PkgDst' $dst))) -Extensions @('.md')
-
-    $r = Fire -Cwd $dst -Config $pkgCfg
-    Check 'a first change is announced' ((Test-SyncReviewNotice $r.Out)) $r.Out
-    $pkgInbox = Join-Path $dst '.ai\.cross-project-sync\inbox'
-    $firstGeneration = @(Get-ChildItem -LiteralPath $pkgInbox -Recurse -Directory -Filter '*' -ErrorAction SilentlyContinue |
-            Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'manifest.json') })
-    Check 'the first review staged exactly one generation' ($firstGeneration.Count -eq 1) ([string]$firstGeneration.Count)
-    $firstRoot = ''
-    if ($firstGeneration.Count -eq 1) { $firstRoot = $firstGeneration[0].FullName }
-
-    # THE SOURCE CHANGES WHILE THAT REVIEW IS OPEN. The old code wiped the inbox
-    # here, so the open review's files vanished and its ACK could never validate
-    # again. A new generation is staged instead; the reviewer's own generation
-    # survives until the new one is verified.
-    Set-Content -LiteralPath (Join-Path $src '.ai\LESSON.md') "# two`nsecond" -Encoding utf8
-    $r2 = Fire -Cwd $dst -Config $pkgCfg
-    Check 'the changed source is announced again' ((Test-SyncReviewNotice $r2.Out)) $r2.Out
-    # -Recurse: the inbox holds one directory PER ROUTE, and the generations live
-    # inside that. Listing only the top level finds the route directory, which
-    # carries no manifest - and then finds no generation at all.
-    $secondGeneration = @(Get-ChildItem -LiteralPath $pkgInbox -Recurse -Directory -ErrorAction SilentlyContinue |
-            Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'manifest.json') })
-    Check 'the replacement is a NEW generation, and the superseded one is retired only after it exists' (
-        $secondGeneration.Count -eq 1 -and $secondGeneration[0].FullName -ne $firstRoot) (
-        (@($secondGeneration | ForEach-Object { $_.Name }) -join ',') + ' first=' + (Split-Path -Leaf $firstRoot))
-
-    # ---- the ACK is bound to the generation on disk ----------------------
-    if ($secondGeneration.Count -ne 1) { throw ('the package fixture is broken: ' + $secondGeneration.Count + ' generation(s) under ' + $pkgInbox) }
-    $ackManifest = Join-Path $secondGeneration[0].FullName 'manifest.json'
-    $ackCommand = [string](Get-Content -LiteralPath $ackManifest -Raw | ConvertFrom-Json).acknowledgementCommand
-    Check 'the manifest carries its own acknowledgement command' (-not [string]::IsNullOrWhiteSpace($ackCommand)) $ackCommand
-
-    # Delete the reviewed package, then acknowledge it: the string still matches,
-    # the package does not exist, and accepting would mark the source processed
-    # on the strength of nothing.
-    $movedAside = Join-Path $Work 'moved-generation'
-    Move-Item -LiteralPath $secondGeneration[0].FullName -Destination $movedAside -Force
-    $ackGone = Run-Acknowledgement -Command $ackCommand
-    Check 'acknowledging a package that is no longer on disk is REFUSED' ($ackGone.Exit -ne 0) ($ackGone.Out + $ackGone.Error)
-    $ackText = ($ackGone.Error + $ackGone.Out) -replace '\s+', ' '
-    Check 'and the refusal says the source will be staged again rather than blaming the reviewer' (
-        $ackText -match 'Package damaged: ' -and
-        $ackText -match 'next event restages') $ackText
-
-    # Put it back, tamper with the manifest's identity, and try again.
-    Move-Item -LiteralPath $movedAside -Destination $secondGeneration[0].FullName -Force
-    $tampered = Get-Content -LiteralPath $ackManifest -Raw | ConvertFrom-Json
-    $tampered.sourceContentFingerprint = ('0' * 64)
-    $tampered | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $ackManifest -Encoding utf8
-    $ackTampered = Run-Acknowledgement -Command $ackCommand
-    Check 'acknowledging a package whose manifest no longer identifies itself is REFUSED' ($ackTampered.Exit -ne 0) ($ackTampered.Out + $ackTampered.Error)
-
-    # ---- a dead pending record is recovered, never announced --------------
-    # Delete the package outright and fire: the state record still points at
-    # it, and the route must stage the current source again instead of
-    # announcing files that are not there.
-    Remove-Item -LiteralPath $secondGeneration[0].FullName -Recurse -Force
-    $r3 = Fire -Cwd $dst -Config $pkgCfg
-    Check 'a pending record whose package is gone is rebuilt, not announced as a dead path' (
-        (Test-SyncReviewNotice $r3.Out)) $r3.Out
-    $rebuilt = @(Get-ChildItem -LiteralPath $pkgInbox -Recurse -Directory -ErrorAction SilentlyContinue |
-            Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'manifest.json') })
-    Check 'and the rebuilt generation really exists on disk' ($rebuilt.Count -eq 1) ([string]$rebuilt.Count)
-    $rebuiltFiles = @(Get-ChildItem -LiteralPath (Join-Path $rebuilt[0].FullName 'files') -Recurse -File -ErrorAction SilentlyContinue)
-    Check 'the rebuilt generation carries the staged files the message points at' ($rebuiltFiles.Count -ge 1) ([string]$rebuiltFiles.Count)
+    finally { [IO.Directory]::Delete($redirect) }
+}
+finally { [IO.Directory]::Delete($link) }

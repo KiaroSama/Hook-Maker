@@ -30,14 +30,19 @@ function Test-RouteScanFresh {
 
 function Set-RouteScanStamp {
     param([Parameter(Mandatory = $true)][string]$StatePath)
+    $temp = $null
     try {
         $stamp = Get-ScanStampPath -StatePath $StatePath
-        $parent = Split-Path -Parent $stamp
-        if (-not [IO.Directory]::Exists($parent)) { [void][IO.Directory]::CreateDirectory($parent) }
-        [IO.File]::WriteAllText($stamp, '')
-        [IO.File]::SetLastWriteTimeUtc($stamp, [DateTime]::UtcNow)
+        if (-not (Test-SyncRegularLeaf $stamp)) { return }
+        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $stamp))
+        $temp = $stamp + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+        $file = [IO.File]::Open($temp, [IO.FileMode]::CreateNew)
+        $file.Dispose()
+        if ([IO.File]::Exists($stamp)) { [IO.File]::Replace($temp, $stamp, [System.Management.Automation.Language.NullString]::Value) }
+        else { [IO.File]::Move($temp, $stamp) }
     }
-    catch { }    # a missing stamp only means the next prompt walks again
+    catch { }    # A missing stamp only means the next prompt walks again.
+    finally { if ($null -ne $temp -and [IO.File]::Exists($temp)) { try { [IO.File]::Delete($temp) } catch { } } }
 }
 
 # Integer setting from route -> profile -> defaults; a bad value keeps the default.

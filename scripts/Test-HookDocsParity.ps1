@@ -113,28 +113,35 @@ Check "README-FA.md states $count hooks and $packageCount packages" ($faCountLin
 
 Write-Host '--- bilingual README badges ---' -ForegroundColor Cyan
 $badgePattern = '(?m)^\[!\[(?<alt>[^\]\r\n]+)\]\(https://img\.shields\.io/badge/(?<label>[A-Za-z0-9.%]+)-(?<value>[A-Za-z0-9.%]+)-(?<color>[0-9a-f]{6})\)\]\((?<target>[^()\s]+)\)\r?$'
+$releaseTarget = 'https://github.com/KiaroSama/Hook-Maker/releases/tag/v1.0.0'
 $blocks = @(foreach ($doc in @(@('README.md', $readme), @('README-FA.md', $readmeFa))) {
     $name = $doc[0]; $text = $doc[1]
     $block = [regex]::Matches($text, '(?ms)^<div align="center">\r?\n\r?\n(.*?)\r?\n\r?\n</div>\r?$')
     $rows = @()
     if ($block.Count -eq 1) { $rows = @([regex]::Matches($block[0].Groups[1].Value, $badgePattern)) }
     $shieldImages = [regex]::Matches($text, 'https?://img\.shields\.io/').Count
-    Check "$name has one centered block with 12 to 16 static badges" ($block.Count -eq 1 -and $rows.Count -ge 12 -and $rows.Count -le 16 -and $rows.Count -eq $shieldImages) "valid rows: $($rows.Count), Shields URLs: $shieldImages"
+    Check "$name has one centered block with exactly 13 static badges" ($block.Count -eq 1 -and $rows.Count -eq 13 -and $rows.Count -eq $shieldImages) "valid rows: $($rows.Count), Shields URLs: $shieldImages"
     $colors = @($rows | ForEach-Object { $_.Groups['color'].Value })
     Check "$name badge colors are distinct" ($colors.Count -eq @($colors | Sort-Object -Unique).Count)
     $required = @($rows | Where-Object { $_.Groups['color'].Value -in '8b5cf6', '0891b2', 'ca8a04', 'd04a9a' } | ForEach-Object { $_.Groups['label'].Value + '-' + $_.Groups['color'].Value })
     Check "$name orders the four required badges" (($required -join ',') -ceq 'PowerShell-8b5cf6,platform-0891b2,repo%20size-ca8a04,Support-d04a9a')
     $hookBadges = @($rows | Where-Object { $_.Groups['label'].Value -ceq 'hooks' })
     Check "$name badge states $count shipped hooks" ($hookBadges.Count -eq 1 -and $hookBadges[0].Groups['value'].Value -ceq ("$count" + '%20shipped'))
+    $labels = @($rows | ForEach-Object { $_.Groups['label'].Value })
+    $releaseIndex = [Array]::IndexOf($labels, 'release')
+    Check "$name puts the single release badge after license and before language" ($releaseIndex -gt 0 -and $releaseIndex -lt ($labels.Count - 1) -and @($labels -ceq 'release').Count -eq 1 -and $labels[$releaseIndex - 1] -ceq 'license' -and $labels[$releaseIndex + 1] -ceq 'PowerShell')
     foreach ($row in $rows) {
         $target = $row.Groups['target'].Value
-        if ($target -ceq '#donate') {
+        if ($row.Groups['label'].Value -ceq 'release') {
+            $ok = $target -ceq $releaseTarget -and $row.Groups['value'].Value -ceq 'v1.0.0' -and $row.Groups['alt'].Value -ceq 'Release v1.0.0'
+        }
+        elseif ($target -ceq '#donate') {
             $ok = $row.Groups['label'].Value -ceq 'Support' -and $row.Groups['value'].Value -ceq 'donations' -and $row.Groups['color'].Value -ceq 'd04a9a' -and $row.Index -eq $rows[-1].Index -and $text -cmatch '(?m)^(?:## Donate|<a name="donate"></a>)\r?$'
         }
         else {
             $ok = $row.Groups['label'].Value -cne 'Support' -and $target -cmatch '^(?:\.?[A-Za-z0-9_-][A-Za-z0-9_.-]*/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*$' -and (Test-Path -LiteralPath (Join-Path $RepoRoot $target) -PathType Leaf)
         }
-        Check "$name badge points to a file or the final donation anchor" $ok $target
+        Check "$name badge points to a file, the approved release tag or the final donation anchor" $ok $target
     }
     ($rows | ForEach-Object { $_.Value.TrimEnd("`r") }) -join "`n"
 })

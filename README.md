@@ -6,6 +6,7 @@
 
 [![GitHub Actions CI workflow on main](https://img.shields.io/badge/CI-GitHub%20Actions-16a34a)](.github/workflows/ci.yml)
 [![Proprietary software license](https://img.shields.io/badge/license-Proprietary-2563eb)](LICENSE)
+[![Release v1.0.0](https://img.shields.io/badge/release-v1.0.0-c2415b)](https://github.com/KiaroSama/Hook-Maker/releases/tag/v1.0.0)
 [![PowerShell 7.6.10 and Windows PowerShell 5.1.26100.10068 measured locally](https://img.shields.io/badge/PowerShell-7.6.10%20%7C%205.1.26100.10068-8b5cf6)](.github/workflows/ci.yml)
 [![Runs on Windows](https://img.shields.io/badge/platform-Windows-0891b2)](.github/workflows/ci.yml)
 [![Launch the setup wizard with run.ps1](https://img.shields.io/badge/install-PowerShell%20wizard-4f46e5)](run.ps1)
@@ -13,7 +14,7 @@
 [![Measured size of tracked repository files in decimal megabytes](https://img.shields.io/badge/repo%20size-7.8%20MB-ca8a04)](README.md)
 [![Registers hooks for Claude Code and Codex CLI](https://img.shields.io/badge/clients-Claude%20Code%20%7C%20Codex%20CLI-b45309)](docs/HOOKS.md)
 [![Shipped hook count includes 30 packages and the sync engine](https://img.shields.io/badge/hooks-31%20shipped-15803d)](docs/HOOKS.md)
-[![Cross-project knowledge sync includes a configurable manifest](https://img.shields.io/badge/sync-Knowledge%20sync-0d9488)](sync-hooks.example.json)
+[![Cross-project knowledge sync lists changed source notes](https://img.shields.io/badge/sync-Knowledge%20sync-0d9488)](sync-hooks.example.json)
 [![Read the registry and sync transaction contracts](https://img.shields.io/badge/registry-Transactional%20updates-334155)](docs/STORAGE-TRANSACTIONS.md)
 [![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate)
 
@@ -23,7 +24,7 @@
 
 ## What Hook Maker does
 
-31 hooks ship with Hook Maker: 30 custom hook packages and a cross-project knowledge sync engine. The wizard installs selected hooks into project folders and registers them for one or both clients. The sync engine stages changed knowledge for review in related projects; the destination agent decides what to import.
+31 hooks ship with Hook Maker: 30 custom hook packages and a cross-project knowledge sync engine. The wizard installs selected hooks into project folders and registers them for one or both clients. The sync engine lists changed source Markdown paths. The destination agent reads the listed notes and adds any reusable lessons to its own memory.
 
 ## Quick start
 
@@ -46,7 +47,7 @@ An individual hook offers its recommended events first. Once installed, the targ
 
 Each shipped hook includes an `.env.example` with its settings. Copy it to `.env` in the hook folder and supply `TARGET_PROJECTS` (semicolon-separated paths), `EVENTS`, and `CLIENTS` (`Both`, `Claude`, or `Codex`). In the wizard, choose `1` then `3` to install from config without prompts. Keep populated local configuration out of Git.
 
-For knowledge sync, choose a sync group with at least two project roots. The wizard creates or updates its `sync-hooks.json` routes so every member can send changes to the others. The staged files are proposals, not automatic edits to the destination's knowledge. See the [sample config](sync-hooks.example.json) and [sync instructions](docs/OPERATIONS.md#sync-config).
+For knowledge sync, choose a sync group with at least two project roots. The wizard creates or updates `sync-hooks.json` routes so each member can see changed source paths from the others. The hook leaves the source read-only and creates no copies. See the [sample config](sync-hooks.example.json) and [sync instructions](docs/OPERATIONS.md#sync-config).
 
 ## Manage installed hooks
 

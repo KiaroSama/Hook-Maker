@@ -52,6 +52,12 @@ function Add-CompanionRuntimeArtifacts {
     if ($FriendlyName -ceq 'Cloudflare-Deploy') {
         Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths @('hooks/Cloudflare-Deploy/_acknowledgment.ps1')
     }
+    if ($FriendlyName -ceq 'Cross-Project-.ai-Knowledge-Sync') {
+        $syncRoot = 'hooks/Cross-Project-.ai-Knowledge-Sync/'
+        Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths @(
+            ($syncRoot + '_syncpaths.ps1'), ($syncRoot + '_routelifecycle.ps1'), ($syncRoot + '_scanthrottle.ps1')
+        )
+    }
     if ($FriendlyName -ceq 'Test-Completion-Check') {
         # Enumeration ships siblings; a missing source cannot declare itself.
         Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths @(

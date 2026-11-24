@@ -1,4 +1,4 @@
-# Registry transactions and reviewed sync generations
+# Registry transactions and cross-project review state
 
 ## Registry
 
@@ -8,14 +8,14 @@ Recovery verifies that snapshot and restores it; the failed live generation is p
 
 The O(1) normal single-record path remains: the full backup cost belongs to batch transactions, not each install. Supported metadata and record identity validation remain prerequisites for mutation. The extra journal stores existing metadata, not prompt contents, hook inputs or credentials.
 
-## Sync packages
+## Sync review state
 
-A new package has a unique immutable generation directory. Source path ancestry and staged destinations must remain within their trusted configured boundaries without reparse redirection. Staged files are verified against their source snapshot before publication. The manifest hash and staged-file records travel with pending state. Acknowledgement revalidates the exact staged file set, every recorded digest, the manifest bytes and path ownership. A manifest repeating the expected fingerprint is insufficient by itself.
+The engine atomically publishes a source snapshot fingerprint and one bounded review batch in a separate `.v3.json` file. Older engines keep using the unsuffixed `.json` file. It emits paths only after that write succeeds. A failed publish leaves the old state and can be retried. The route mutex covers scans and acknowledgement.
 
-Publication commits the new state pointer before retiring older generations. Copy/verification/state-write failure must preserve the old pending generation. Cleanup failure is a separate deferred outcome, not evidence that publication failed or that review succeeded. Legacy pending packages without byte proof are rebuilt by the ordinary delivery path and must be reviewed again before acknowledgement; they are not silently trusted.
+Acknowledgement verifies that the command binds the listed batch to a fresh source snapshot. It records only that batch and previously checked files. The engine checks ancestry and the opened source file handle before hashing. The v3 writer never changes old state or inbox bytes. It can read prior acknowledged file records; it does not trust old pending reviews. Complete uninstall retires only the exact owned v3 state and its regular scan stamp, without inspecting legacy state or inboxes.
 
 ## Regression evidence
 
-`storage-integrity-regressions.yml` runs both native Windows hosts. `Test-StorageIntegrity.ps1` reproduces partial-batch recovery, delete-all interruption, future-schema refusal, staged-byte tampering, missing files and path confinement. `Test-PackagePublication.ps1` uses real production package functions, positive one-file/empty-package controls, tampered and injected files, a real file-sharing failure at state publication, and an internal junction with a preserved external sentinel.
+`storage-integrity-regressions.yml` runs both native Windows hosts. `Test-StorageIntegrity.ps1` covers partial-batch recovery, delete-all interruption, future-schema refusal, and path confinement. `Test-PackagePublication.ps1` holds a real file lock to check that a failed state write preserves the original bytes. The engine suite tests exact source paths, stale acknowledgement, junction refusal and untouched legacy inboxes.
 
 The ordinary full CI is still required. A dedicated regression artifact reports its exact tested revision and actual per-case outcomes. A failure, timeout or absent required artifact is never counted as a pass. Review and merge belong to the requester; this audit does not merge or close PRs.

@@ -27,14 +27,23 @@ $script:TestPreviewLength = 400
 $Work = New-TestWorkspace -Prefix 'hookmaker-test'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
-# A pending package is advisory; its identity, evidence paths and bound ACK remain required.
+function Get-SyncNotice {
+    param([string]$Output)
+    try { return [string](($Output | ConvertFrom-Json).hookSpecificOutput.additionalContext) } catch { return '' }
+}
+
 function Test-SyncReviewNotice {
     param([string]$Output)
-    $message = ''
-    try { $message = [string](($Output | ConvertFrom-Json).hookSpecificOutput.additionalContext) } catch { return $false }
-    return ($message -match '^Cross-Project-\.ai-Knowledge-Sync: advisory profile=grp, route=\S+' -and
-        $message -match 'destination=.+, source=.+, manifest=.+manifest\.json, staged=.+\. Destination rules;' -and
-        $message -match 'Review, even no import: .+-Acknowledge .+-ContentFingerprint ')
+    $message = Get-SyncNotice $Output
+    return ($message -match '^Cross-Project-\.ai-Knowledge-Sync: advisory\.' -and
+        $message -match '"profile":"grp"' -and $message -match '"route":"[^"]+"' -and
+        $message -match 'Read only these changed source Markdown files' -and
+        (Get-SyncAckCommand $Output) -match ' -Acknowledge .+-ContentFingerprint ')
+}
+
+function Get-SyncAckCommand {
+    param([string]$Output)
+    return [regex]::Match((Get-SyncNotice $Output), '(?m)^~~~\n(powershell\.exe .+ -Acknowledge .+)\n~~~$').Groups[1].Value
 }
 
 function New-Project {
@@ -124,12 +133,19 @@ function Fire {
 }
 
 function Run-Acknowledgement {
-    param([string]$Command)
+    param([string]$Command, [switch]$Restricted)
     $token = [guid]::NewGuid().ToString('N')
     $outFile = Join-Path $Work ('ack-' + $token + '.out')
     $errFile = Join-Path $Work ('ack-' + $token + '.err')
-    # Execute the generated argument string as process arguments, never as PowerShell code.
-    $proc = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList ($Command -replace '^powershell\.exe ', '') -RedirectStandardOutput $outFile -RedirectStandardError $errFile -WindowStyle Hidden -PassThru
+    # Run the pasted command only against the known engine and this fixture workspace.
+    $launch = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File '
+    $expected = $launch + "'" + $Engine.Replace("'", "''") + "' -Acknowledge "
+    if (-not $Command.StartsWith($expected, [StringComparison]::Ordinal)) { throw 'Unexpected fixture acknowledgement command.' }
+    $file = (Get-Process -Id $PID).Path
+    $policy = 'Bypass'
+    if ($Restricted) { $file = 'powershell.exe'; $policy = 'Restricted' }
+    $argLine = ConvertTo-ProcessArgumentString @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', $policy, '-Command', $Command)
+    $proc = Start-Process -FilePath $file -ArgumentList $argLine -RedirectStandardOutput $outFile -RedirectStandardError $errFile -WindowStyle Hidden -PassThru
     try {
         $null = $proc.Handle
         # 60 s for the same reason as the engine-event bound above - this is the
@@ -175,11 +191,11 @@ try {
     $r2 = Fire -Cwd $B -Config $cfg2
     Check 'many-extension config: review emitted' ((Test-SyncReviewNotice $r2.Out))
 
-    # --- Scenario 3: staged package on disk (from scenario 1) --------------
+    # --- Scenario 3: exact source path and no destination copy -------------
     $inboxRoot = Join-Path $B '.ai\.cross-project-sync\inbox'
-    $staged = @(Get-ChildItem -LiteralPath $inboxRoot -Recurse -File -ErrorAction SilentlyContinue)
-    Check 'manifest.json staged' (@($staged | Where-Object Name -eq 'manifest.json').Count -ge 1)
-    Check 'source LESSON.md staged' (@($staged | Where-Object Name -eq 'LESSON.md').Count -ge 1)
+    Check 'review creates no inbox or payload' (-not (Test-Path -LiteralPath $inboxRoot))
+    $notice = Get-SyncNotice $r1.Out
+    Check 'notice names the exact source note' ($notice.Contains((Join-Path $A '.ai\LESSON.md')))
 
     # --- Scenario 4: same session is silent --------------------------------
     $null = Fire -Cwd $B -Config $cfg1 -SessionId 'fixed'          # first notify in this session
@@ -188,12 +204,9 @@ try {
 
     # --- Scenario 5: acknowledge clears the pending review -----------------
     $currentHost = (Get-Process -Id $PID).Path
-    $reviewManifest = Get-ChildItem -LiteralPath $inboxRoot -Recurse -Filter 'manifest.json' | Select-Object -First 1
-    $review = Get-Content -LiteralPath $reviewManifest.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-    $ack = Run-Acknowledgement -Command $review.acknowledgementCommand
+    $ack = Run-Acknowledgement -Command (Get-SyncAckCommand $r1.Out)
     Check 'acknowledge: succeeds' ($ack.Exit -eq 0 -and $ack.Out -match 'acknowledged') $ack.Error
-    $stagedAfter = @(Get-ChildItem -LiteralPath $inboxRoot -Recurse -File -ErrorAction SilentlyContinue)
-    Check 'acknowledge: inbox cleaned' ($stagedAfter.Count -eq 0)
+    Check 'acknowledge: still no inbox' (-not (Test-Path -LiteralPath $inboxRoot))
     $rAfterAck = Fire -Cwd $B -Config $cfg1
     Check 'after acknowledge: silent (no changes)' ([string]::IsNullOrWhiteSpace($rAfterAck.Out))
 
@@ -202,10 +215,9 @@ try {
     Set-Content -LiteralPath (Join-Path $A '.ai\COMMANDS.md') 'npm test' -Encoding utf8
     $r6 = Fire -Cwd $B -Config $cfg1 -EventName 'UserPromptSubmit'
     Check 'change re-detected after ack' ((Test-SyncReviewNotice $r6.Out))
-    $manifest = Get-ChildItem -LiteralPath $inboxRoot -Recurse -Filter 'manifest.json' | Select-Object -First 1
-    $m = Get-Content -LiteralPath $manifest.FullName -Raw | ConvertFrom-Json
-    Check 'manifest lists added COMMANDS.md' (@($m.added) -contains 'COMMANDS.md')
-    Check 'manifest lists modified LESSON.md' (@($m.modified) -contains 'LESSON.md')
+    $changeNotice = Get-SyncNotice $r6.Out
+    Check 'notice lists added COMMANDS.md at the source' ($changeNotice.Contains((Join-Path $A '.ai\COMMANDS.md')))
+    Check 'notice lists modified LESSON.md at the source' ($changeNotice.Contains((Join-Path $A '.ai\LESSON.md')))
 
     # --- Scenario 7: unrelated project is ignored --------------------------
     Set-Content -LiteralPath (Join-Path $X '.ai\NOTE.md') 'X is in no route' -Encoding utf8
@@ -299,11 +311,7 @@ try {
     Check 'ack on {} state: reports no pending review' (($ackEmpty | Out-String) -match 'No pending review exists')
 
     # --- Scenario 13: pending object missing a nested field (HM-01 class 3) ---
-    # A real pending package is seeded (files genuinely staged on disk), then
-    # ONE nested field is deleted from the state file's pending object. The
-    # normalizer must repair only that field and PRESERVE every other pending
-    # field (packageRoot/manifestPath/filesRoot/...) - never discard the whole
-    # package and silently drop an already-staged review.
+    # A missing quick fingerprint is repaired from the same source snapshot.
     $PartialPendingSrc = New-Project 'PartialPendingSrc'
     $PartialPendingDest = New-Project 'PartialPendingDest'
     Set-Content -LiteralPath (Join-Path $PartialPendingSrc '.ai\NOTE.md') 'partial pending fixture' -Encoding utf8
@@ -315,8 +323,8 @@ try {
     $partialPendingStateFile = Get-ChildItem -LiteralPath (Join-Path $PartialPendingDest '.ai\.cross-project-sync\state') -Filter '*.json' -ErrorAction SilentlyContinue | Select-Object -First 1
     Check 'partial-pending fixture: state file exists' ($null -ne $partialPendingStateFile)
     $seededPendingState = Get-Content -LiteralPath $partialPendingStateFile.FullName -Raw | ConvertFrom-Json
-    $originalPackageRoot = [string]$seededPendingState.pending.packageRoot
-    Check 'partial-pending fixture: seeded pending has a packageRoot' (-not [string]::IsNullOrWhiteSpace($originalPackageRoot))
+    $originalFingerprint = [string]$seededPendingState.pending.sourceContentFingerprint
+    Check 'partial-pending fixture: seeded review has a content fingerprint' ($originalFingerprint -match '^[0-9a-f]{64}$')
 
     # Delete just sourceQuickFingerprint from the nested pending object; every other field (incl. sourceContentFingerprint) stays.
     $seededPendingState.pending.PSObject.Properties.Remove('sourceQuickFingerprint')
@@ -326,7 +334,7 @@ try {
     Check 'pending missing sourceQuickFingerprint: exit 0 (no StrictMode crash)' ($rPartialPending.Exit -eq 0) $rPartialPending.Out
     Check 'pending missing sourceQuickFingerprint: review re-notified' ((Test-SyncReviewNotice $rPartialPending.Out)) $rPartialPending.Out
     $stateAfterPartialPending = Get-Content -LiteralPath $partialPendingStateFile.FullName -Raw | ConvertFrom-Json
-    Check 'pending missing sourceQuickFingerprint: original packageRoot preserved (not rebuilt)' ([string]$stateAfterPartialPending.pending.packageRoot -eq $originalPackageRoot) ([string]$stateAfterPartialPending.pending.packageRoot)
+    Check 'pending missing sourceQuickFingerprint: content fingerprint preserved' ($stateAfterPartialPending.pending.sourceContentFingerprint -ceq $originalFingerprint)
     Check 'pending missing sourceQuickFingerprint: field repaired (non-null)' ($null -ne $stateAfterPartialPending.pending.sourceQuickFingerprint)
 
     # --- Scenario 14: leaner top-level schema, pending fully intact (HM-01 class 4) ---
@@ -334,7 +342,7 @@ try {
     # fields the current script always writes (version, lastNotifiedSessionId,
     # lastNotifiedAtUtc, lastAppliedFiles, routeId) are entirely ABSENT, while
     # the nested 'pending' object is completely intact. The still-valid
-    # pending must be preserved byte-for-byte (same packageRoot) purely
+    # pending must retain its content fingerprint purely
     # because unrelated sibling fields are missing, not corrupted.
     $OlderSchemaSrc = New-Project 'OlderSchemaSrc'
     $OlderSchemaDest = New-Project 'OlderSchemaDest'
@@ -347,7 +355,7 @@ try {
     $olderSchemaStateFile = Get-ChildItem -LiteralPath (Join-Path $OlderSchemaDest '.ai\.cross-project-sync\state') -Filter '*.json' -ErrorAction SilentlyContinue | Select-Object -First 1
     Check 'older-schema fixture: state file exists' ($null -ne $olderSchemaStateFile)
     $olderSeededState = Get-Content -LiteralPath $olderSchemaStateFile.FullName -Raw | ConvertFrom-Json
-    $olderOriginalPackageRoot = [string]$olderSeededState.pending.packageRoot
+    $olderOriginalFingerprint = [string]$olderSeededState.pending.sourceContentFingerprint
 
     $olderSeededState.PSObject.Properties.Remove('version')
     $olderSeededState.PSObject.Properties.Remove('routeId')
@@ -360,7 +368,7 @@ try {
     Check 'leaner top-level schema: exit 0 (no StrictMode crash)' ($rOlderSchema.Exit -eq 0) $rOlderSchema.Out
     Check 'leaner top-level schema: review re-notified for new session' ((Test-SyncReviewNotice $rOlderSchema.Out)) $rOlderSchema.Out
     $stateAfterOlderSchema = Get-Content -LiteralPath $olderSchemaStateFile.FullName -Raw | ConvertFrom-Json
-    Check 'leaner top-level schema: pending packageRoot preserved byte-for-byte' ([string]$stateAfterOlderSchema.pending.packageRoot -eq $olderOriginalPackageRoot) ([string]$stateAfterOlderSchema.pending.packageRoot)
+    Check 'leaner top-level schema: pending content fingerprint preserved' ($stateAfterOlderSchema.pending.sourceContentFingerprint -ceq $olderOriginalFingerprint)
     Check 'leaner top-level schema: routeId repaired (non-empty)' (-not [string]::IsNullOrWhiteSpace([string]$stateAfterOlderSchema.routeId))
 
     # --- Scenario 15: lastAppliedFiles serialized as an empty OBJECT ---
@@ -423,24 +431,26 @@ try {
     $staleSourceFile = Join-Path $StaleSrc '.ai\NOTE.md'
     [System.IO.File]::WriteAllText($staleSourceFile, 'abc', [System.Text.UTF8Encoding]::new($false))
     $seedA = Fire -Cwd $StaleDest -Config $cfgStale
-    Check 'stale acknowledgement: package A is staged' ($seedA.Exit -eq 0 -and (Test-SyncReviewNotice $seedA.Out))
+    Check 'stale acknowledgement: review A is announced' ($seedA.Exit -eq 0 -and (Test-SyncReviewNotice $seedA.Out))
     $staleStateFile = Get-ChildItem -LiteralPath (Join-Path $StaleDest '.ai\.cross-project-sync\state') -Filter '*.json' | Select-Object -First 1
     $packageA = (Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json).pending
     Check 'content digest: standard abc SHA-256 stays lower-case and byte-identical' ($packageA.sourceFiles[0].sha256 -ceq 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
-    $commandA = [string]$packageA.acknowledgementCommand
+    $commandA = Get-SyncAckCommand $seedA.Out
 
     Set-Content -LiteralPath $staleSourceFile 'Unreviewed replacement package B' -Encoding UTF8
+    $preScanAck = Run-Acknowledgement -Command $commandA
+    Check 'ack refuses edited source before another event scans it' ($preScanAck.Exit -ne 0 -and $preScanAck.Error -match 'Source changed') $preScanAck.Error
     $seedB = Fire -Cwd $StaleDest -Config $cfgStale -EventName 'UserPromptSubmit'
-    Check 'stale acknowledgement: package B replaces A' ($seedB.Exit -eq 0 -and (Test-SyncReviewNotice $seedB.Out))
+    Check 'stale acknowledgement: review B replaces A' ($seedB.Exit -eq 0 -and (Test-SyncReviewNotice $seedB.Out))
     $stateBeforeStale = Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8
     $packageB = ($stateBeforeStale | ConvertFrom-Json).pending
+    $commandB = Get-SyncAckCommand $seedB.Out
     Check 'stale acknowledgement: fixture fingerprints differ' ($packageA.sourceContentFingerprint -ne $packageB.sourceContentFingerprint)
     $staleAck = Run-Acknowledgement -Command $commandA
     Check 'stale acknowledgement: old A command fails' ($staleAck.Exit -ne 0) $staleAck.Out
     Check 'stale acknowledgement: B state is unchanged' ((Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8) -ceq $stateBeforeStale)
-    Check 'stale acknowledgement: B package remains available' (Test-Path -LiteralPath $packageB.manifestPath -PathType Leaf)
 
-    $legacyCommand = [regex]::Replace([string]$packageB.acknowledgementCommand, ' -ContentFingerprint "[^"]*"', '')
+    $legacyCommand = [regex]::Replace([string]$commandB, " -ContentFingerprint '[0-9a-f]{64}'$", '')
     $legacyAck = Run-Acknowledgement -Command $legacyCommand
     Check 'legacy acknowledgement: unbound command fails' ($legacyAck.Exit -ne 0) $legacyAck.Out
     Check 'legacy acknowledgement: B state is unchanged' ((Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8) -ceq $stateBeforeStale)
@@ -457,34 +467,23 @@ try {
     try {
         $lockAcquired = $routeMutex.WaitOne(0)
         if (-not $lockAcquired) { throw 'The isolated route lock could not be acquired for the contention fixture.' }
-        $lockedAck = Run-Acknowledgement -Command $packageB.acknowledgementCommand
+        $lockedAck = Run-Acknowledgement -Command $commandB
         Check 'route contention: acknowledgement refuses on lock timeout' ($lockedAck.Exit -ne 0 -and $lockedAck.Error -match 'route is busy') $lockedAck.Error
         Check 'route contention: acknowledgement preserves pending B state' ((Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8) -ceq $stateBeforeStale)
         $lockedEvent = Fire -Cwd $StaleDest -Config $cfgStale -EventName 'UserPromptSubmit'
         Check 'route contention: normal event uses the same lock' ($lockedEvent.Exit -ne 0 -and $lockedEvent.Error -match 'route is busy') $lockedEvent.Error
         Check 'route contention: normal event preserves pending B state' ((Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8) -ceq $stateBeforeStale)
-        Check 'route contention: package B remains available' (Test-Path -LiteralPath $packageB.manifestPath -PathType Leaf)
     }
     finally {
         if ($lockAcquired) { $routeMutex.ReleaseMutex() }
         $routeMutex.Dispose()
     }
 
-    # An installed upgrade can encounter a cached unbound command. A fresh
-    # notification must provide a usable bound command without dropping its package.
-    $legacyState = Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-    $legacyState.pending.acknowledgementCommand = $legacyCommand
-    $legacyState | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath $staleStateFile.FullName -Encoding UTF8
-    $migratedEvent = Fire -Cwd $StaleDest -Config $cfgStale
-    $migratedContext = [string]($migratedEvent.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext
-    $migratedCommand = [regex]::Match($migratedContext, '(?m)(?<=Review, even no import: )powershell\.exe .*').Value.Trim()
-    Check 'legacy pending package: notification regenerates a bound command' ($migratedCommand -match ('-ContentFingerprint "' + $packageB.sourceContentFingerprint + '"'))
-    Check 'legacy pending package: staged review is retained' (Test-Path -LiteralPath $packageB.manifestPath -PathType Leaf)
-    $currentAck = Run-Acknowledgement -Command $migratedCommand
+    $currentAck = Run-Acknowledgement -Command $commandB
     $appliedB = Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
     Check 'current acknowledgement: generated B command succeeds' ($currentAck.Exit -eq 0 -and $currentAck.Out -match 'acknowledged') $currentAck.Error
     Check 'current acknowledgement: only B fingerprint is applied' ($null -eq $appliedB.pending -and $appliedB.lastAppliedContentFingerprint -eq $packageB.sourceContentFingerprint)
-    $repeatB = Run-Acknowledgement -Command $packageB.acknowledgementCommand
+    $repeatB = Run-Acknowledgement -Command $commandB
     Check 'current acknowledgement: repeated B command is an idempotent no-op' ($repeatB.Exit -eq 0 -and $repeatB.Out -match 'No pending review exists')
 
     # Spec 037: a prompt inside rescanMinutes skips the walk; SessionStart never does.
@@ -495,7 +494,7 @@ try {
     $thrStateDir = Join-Path $ThrDest '.ai\.cross-project-sync\state'
     Set-Content -LiteralPath $thrNote 'first' -Encoding utf8
     $thr1 = Fire -Cwd $ThrDest -Config $cfgThr
-    Check 'throttle: SessionStart walks and stages' ($thr1.Exit -eq 0 -and (Test-SyncReviewNotice $thr1.Out)) $thr1.Error
+    Check 'throttle: SessionStart walks and announces' ($thr1.Exit -eq 0 -and (Test-SyncReviewNotice $thr1.Out)) $thr1.Error
     $thrStamp = @(Get-ChildItem -LiteralPath $thrStateDir -Filter '*.scan')
     Check 'throttle: a completed walk leaves a scan stamp' ($thrStamp.Count -eq 1)
     Set-Content -LiteralPath $thrNote 'second' -Encoding utf8
@@ -511,9 +510,10 @@ try {
     $thr4 = Fire -Cwd $ThrDest -Config $cfgThr
     Check 'throttle: SessionStart always rescans' ($thr4.Exit -eq 0 -and (Test-SyncReviewNotice $thr4.Out)) $thr4.Out
 
-    # Owned package generations (L08): containment from the trusted
-    # destination, verified staging, generational replacement, bound ACK.
+    # Source boundaries and legacy inbox preservation.
     . (Join-Path $ScriptRoot '_testsyncpackage.ps1')
+    . (Join-Path $ScriptRoot '_testsyncreviewhardening.ps1')
+    . (Join-Path $ScriptRoot '_testsyncreviewedges.ps1')
 }
 finally {
     if ($KeepArtifacts) {

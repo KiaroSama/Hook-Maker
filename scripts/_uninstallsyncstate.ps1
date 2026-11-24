@@ -1,6 +1,4 @@
-# Retire route-local state without erasing pending review evidence. Archive
-# beneath the same sync root, outside active state/inbox, so a same-volume move
-# is recoverable and never copies private knowledge into management logs.
+# Retire v3 review metadata in its project. Old runtimes own their legacy paths.
 function Get-UninstallSyncStatePlan {
     param($Routes,[string]$Profile)
     $seen=@{}
@@ -17,20 +15,32 @@ function Get-UninstallSyncStatePlan {
         if($safe.Length-gt48){$safe=$safe.Substring(0,48)};if($safe-eq''){$safe='item'}
         $key=$safe+'-'+(Get-RepositoryIdentityHash $text).Substring(0,10)
         $sync=Join-Path $dest '.cross-project-sync'
-        $state=Join-Path $sync ('state/'+$key+'.json')
-        $inbox=Join-Path $sync ('inbox/'+$key)
-        if($seen.ContainsKey($state)){
-            if($seen[$state]-cne$text){throw 'Sync state key collision; ownership is ambiguous.'}
+        $currentState=Join-Path $sync ('state/'+$key+'.v3.json')
+        $stamp=[IO.Path]::ChangeExtension($currentState,'.scan')
+        if($seen.ContainsKey($currentState)){
+            if($seen[$currentState]-cne$text){throw 'Sync state key collision; ownership is ambiguous.'}
             continue
-        };$seen[$state]=$text
-        foreach($path in @($sync,$state,$inbox)){Assert-UninstallRegularPath $path}
-        Assert-UninstallTree $inbox
-        if(Test-Path -LiteralPath $state){
-            $doc=(Read-UninstallSnapshot $state).Raw|ConvertFrom-Json
-            if([string](Get-Field $doc 'profileId')-cne$Profile-or[string](Get-Field $doc 'routeId')-cne[string]$route.id-or
-                (Normalize-Path ([string](Get-Field $doc 'sourceRoot')))-ine$source){throw 'Sync state identity differs from selected route.'}
-        }
-        [pscustomobject]@{State=$state;Inbox=$inbox;SyncRoot=$sync;Profile=$Profile;Route=[string]$route.id;Source=$source}
+        };$seen[$currentState]=$text
+        $entry=[pscustomobject]@{CurrentState=$currentState;Stamp=$stamp;SyncRoot=$sync;Profile=$Profile;Route=[string]$route.id;Source=$source}
+        Assert-UninstallSyncState $entry
+        $entry
+    }
+}
+
+function Assert-UninstallSyncState {
+    param($Entry)
+    if (-not (Get-Command Test-SyncRegularLeaf -ErrorAction SilentlyContinue)) {
+        . (Join-Path $ToolRoot 'hooks/Cross-Project-.ai-Knowledge-Sync/_syncpaths.ps1')
+    }
+    foreach($path in @($Entry.CurrentState,$Entry.Stamp)){
+        if(-not(Test-PathContainedIn $path $Entry.SyncRoot)){throw 'Sync state recovery path escaped its root.'}
+        Assert-UninstallRegularPath $path
+        if(-not(Test-SyncRegularLeaf $path)){throw 'Sync state recovery requires a singly linked regular file.'}
+    }
+    if([IO.File]::Exists($Entry.CurrentState)){
+        $doc=(Read-UninstallSnapshot $Entry.CurrentState).Raw|ConvertFrom-Json
+        if([string](Get-Field $doc 'profileId')-cne$Entry.Profile-or[string](Get-Field $doc 'routeId')-cne$Entry.Route-or
+            (Normalize-Path ([string](Get-Field $doc 'sourceRoot')))-ine$Entry.Source){throw 'Sync state identity differs from selected route.'}
     }
 }
 
@@ -107,32 +117,23 @@ function Complete-UninstallSyncJournal {
 function Move-UninstallSyncState {
     param($Plan)
     foreach($entry in @($Plan.States)){
-        # Drain an existing writer even when it has not created its first file.
-        # Hold one route lock across both moves; queued engines recheck routing.
-        $mutexKey=Get-RepositoryIdentityHash (Normalize-Path $entry.State).ToUpperInvariant()
+        # Drain a queued v3 writer even if it has not created its first file.
+        $mutexKey=Get-RepositoryIdentityHash (Normalize-Path $entry.CurrentState).ToUpperInvariant()
         $mutex=[Threading.Mutex]::new($false,('Global\HookMakerSync-'+$mutexKey));$held=$false
         try{
             try{$held=$mutex.WaitOne(5000)}catch [Threading.AbandonedMutexException]{$held=$true}
             if(-not$held){throw 'Sync route is busy; selected record retained.'}
-            foreach($path in @($entry.State,$entry.Inbox)){
-                Assert-UninstallRegularPath $path
-                if(-not(Test-Path -LiteralPath $path)){continue}
-                if(-not(Test-PathContainedIn $path $entry.SyncRoot)){throw 'Sync state recovery path escaped its root.'}
-                if($path-ceq$entry.Inbox){Assert-UninstallTree $path}
-                if($path-ceq$entry.State){
-                    $current=Read-JsonFile $path
-                    if([string](Get-Field $current 'profileId')-cne$entry.Profile-or[string](Get-Field $current 'routeId')-cne$entry.Route-or
-                        (Normalize-Path ([string](Get-Field $current 'sourceRoot')))-ine$entry.Source){throw 'Sync state changed before retirement.'}
-                }
+            Assert-UninstallSyncState $entry
+            foreach($path in @($entry.CurrentState,$entry.Stamp)){
+                if(-not[IO.File]::Exists($path)){continue}
                 $retired=Join-Path $entry.SyncRoot ('retired/'+$RecordId)
                 Assert-UninstallRegularPath $retired
                 [void][IO.Directory]::CreateDirectory($retired)
                 $target=Join-Path $retired ((Split-Path -Leaf $path)+'-'+[guid]::NewGuid().ToString('N'))
-                Move-Item -LiteralPath $path -Destination $target -ErrorAction Stop
-                if(Test-Path -LiteralPath $path){throw 'Active sync state remains after retirement.'}
-                if(-not(Test-Path -LiteralPath $target)){throw 'Retired recovery target could not be verified.'}
+                [IO.File]::Move($path,$target)
+                if((Test-Path -LiteralPath $path)-or-not[IO.File]::Exists($target)){throw 'Retired sync file could not be verified.'}
             }
         }finally{if($held){$mutex.ReleaseMutex()};$mutex.Dispose()}
     }
-    Set-ComponentResult -Component 'syncState' -Status 'ok' -ReasonCode 'retiredWithRecovery' -Message 'Selected route state and pending inbox moved out of active namespaces to route-local retired recovery; applied knowledge and unrelated routes were not deleted.'
+    Set-ComponentResult -Component 'syncState' -Status 'ok' -ReasonCode 'retiredWithRecovery' -Message 'Owned v3 review state and scan stamp moved to recovery. Legacy data was untouched.'
 }

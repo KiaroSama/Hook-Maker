@@ -77,23 +77,30 @@ try {
         $recovery = Repair-InterruptedInstallRegistryGeneration -ToolRoot $repo
         Check-Storage 'recovery cannot downgrade an incomplete future-schema registry' (-not $recovery.Ok -and [IO.File]::ReadAllText($meta) -ceq $before)
 
-        . (Join-Path $repo 'hooks\Cross-Project-.ai-Knowledge-Sync\_packageguard.ps1')
-        $package = Join-Path $work 'review-package'
-        [void][IO.Directory]::CreateDirectory((Join-Path $package 'files'))
-        [IO.File]::WriteAllText((Join-Path $package 'files\lesson.md'), 'original reviewed content')
-        $fingerprint = 'a' * 64
-        Write-JsonFileAtomic -Path (Join-Path $package 'manifest.json') -Value ([pscustomobject]@{ version = 2; sourceContentFingerprint = $fingerprint; added = @('lesson.md'); modified = @(); deleted = @() })
-        [IO.File]::WriteAllText((Join-Path $package 'files\lesson.md'), 'changed after review')
-        Check-Storage 'a matching self-declared manifest fingerprint does not prove staged bytes intact' (-not (Test-PackageGenerationIntact -PackageRoot $package -Fingerprint $fingerprint))
-        Remove-Item -LiteralPath (Join-Path $package 'files\lesson.md') -Force
-        Check-Storage 'a missing staged file prevents acknowledgement' (-not (Test-PackageGenerationIntact -PackageRoot $package -Fingerprint $fingerprint))
+        . (Join-Path $repo 'hooks\Cross-Project-.ai-Knowledge-Sync\_syncpaths.ps1')
         $fileAncestor = Join-Path $work 'not-a-directory'
         [IO.File]::WriteAllText($fileAncestor, 'file')
-        Check-Storage 'a file masquerading as a staging directory is rejected' (-not (Test-OwnedStagingChain -TrustedRoot $work -OwnedRoot $fileAncestor -Target (Join-Path $fileAncestor 'package')))
-        $outside = Join-Path $work 'outside.md'
-        [IO.File]::WriteAllText($outside, 'outside')
-        $digest = (Get-FileHash -LiteralPath $outside -Algorithm SHA256).Hash.ToLowerInvariant()
-        Check-Storage 'a staged-file record cannot hash a path outside its files root' (-not (Test-StagedFilesVerified -FilesRoot (Join-Path $package 'files') -Records @([pscustomobject]@{ path = '../../outside.md'; sha256 = $digest })))
+        Check-Storage 'a file masquerading as a state directory is rejected' (-not (Test-SyncPathChain -Root $work -Path (Join-Path $fileAncestor 'route.json') -Leaf -AllowMissing))
+        $outside = Join-Path (Split-Path -Parent $work) 'outside.md'
+        Check-Storage 'a state path cannot escape the configured root' (-not (Test-SyncPathChain -Root $work -Path $outside -Leaf -AllowMissing))
+
+        $caseParent = Join-Path $work 'case-sibling-parent'
+        [void][IO.Directory]::CreateDirectory($caseParent)
+        $null = & fsutil.exe file setCaseSensitiveInfo $caseParent enable 2>&1
+        $caseSensitive = $LASTEXITCODE -eq 0
+        $project = Join-Path $caseParent 'Project'
+        $sibling = Join-Path $caseParent 'project'
+        [void][IO.Directory]::CreateDirectory($project)
+        if ($caseSensitive) {
+            [void][IO.Directory]::CreateDirectory($sibling)
+            [IO.File]::WriteAllText((Join-Path $sibling 'sibling.md'), 'distinct sibling')
+            Check-Storage 'NTFS fixture has distinct case-sensitive siblings' (-not [IO.File]::Exists((Join-Path $project 'sibling.md')))
+        }
+        else { Write-Host 'NTFS case sensitivity unavailable; checking path spelling on the ordinary directory.' }
+        Check-Storage 'reject path tails with a different case' (-not (Test-SyncPathChain -Root $project -Path (Join-Path $sibling 'sibling.md') -Leaf -AllowMissing))
+        $driveAlias = [string]$project[0]
+        $driveAlias = $(if ($driveAlias -ceq $driveAlias.ToUpperInvariant()) { $driveAlias.ToLowerInvariant() } else { $driveAlias.ToUpperInvariant() }) + $project.Substring(1)
+        Check-Storage 'accept the same path with a different drive letter case' (Test-SyncPathChain -Root $project -Path (Join-Path $driveAlias 'inside.md') -Leaf -AllowMissing)
     }
 }
 catch { Check-Storage 'suite completed without an unexpected exception' $false $_.Exception.Message }

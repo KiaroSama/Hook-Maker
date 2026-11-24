@@ -72,7 +72,7 @@
     # shows it exactly once alongside the real per-hook entries.
     Check 'every shipped hook renders exactly one valid, non-empty timing tag' (($preTagCount + $postTagCount + $bothTagCount) -eq ($allShippedHookCount + 1)) ('pre=' + $preTagCount + ' post=' + $postTagCount + ' both=' + $bothTagCount + ' expected=' + ($allShippedHookCount + 1))
     Check 'listing shows short descriptions' ($r.Out -match 'relevant \.ai context files' -and $r.Out -match 'routes rules and language choices; confirms rules at the end')
-    Check 'menu parts are pipe-separated' ($r.Out -match 'Create or update a sync group \| \[pre-task\] \| cross-project \.ai knowledge sync')
+    Check 'menu parts are pipe-separated' ($r.Out -match 'Create or update a sync group \| \[pre-task\] \| cross-project \.ai knowledge sync by source path; asks before merging linked groups')
     $menuOrder = @(
         '1\. Select all hooks', '2\. Create or update a sync group', '3\. Ai-Context-Check',
         '4\. Ai-Context-Load', '5\. Ci-Status-Check', '6\. Dependabot-Check',
@@ -452,6 +452,8 @@
         Check "$name claude runtime copy complete" ((Test-Path (Join-Path $proj (Join-Path '.claude' $eng))) -and (Test-Path (Join-Path $proj '.claude\hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\_hooklib.ps1')) -and (Test-Path (Join-Path $proj (Join-Path '.claude' $engCfg))))
         Check "$name codex runtime copy complete" ((Test-Path (Join-Path $proj (Join-Path '.codex' $eng))) -and (Test-Path (Join-Path $proj (Join-Path '.codex' $engCfg))))
         foreach ($clientDir in @('.claude', '.codex')) {
+            $runtimeDir = Split-Path -Parent (Join-Path $proj (Join-Path $clientDir $eng))
+            Check "$name $clientDir has source path validation and no copy helpers" ((Test-Path -LiteralPath (Join-Path $runtimeDir '_syncpaths.ps1') -PathType Leaf) -and -not (Test-Path -LiteralPath (Join-Path $runtimeDir '_packagebuild.ps1')) -and -not (Test-Path -LiteralPath (Join-Path $runtimeDir '_packageguard.ps1')))
             $projectList = Join-Path $proj (Join-Path $clientDir $engProjects)
             $projectListText = ''; if (Test-Path $projectList) { $projectListText = [System.IO.File]::ReadAllText($projectList) }
             Check "$name $clientDir runtime lists the sync projects" ((Test-Path $projectList) -and $projectListText.Contains($a3) -and $projectListText.Contains($b3))

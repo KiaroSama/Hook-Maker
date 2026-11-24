@@ -87,7 +87,7 @@ function Invoke-InstallExistingHook {
 
         Write-MenuTitle 'Available hooks (hooks\):'
         Write-Host ('  ' + (Get-Painted '1.' $C.LightBlue) + ' ' + (Get-Painted 'Select all hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[all]' $C.Orchid) + $script:MenuSep + (Get-Painted ('run the sync group (2) and install every hook below (' + $hookSpans + ')') $C.HintYellow))
-        Write-Host ('  ' + (Get-Painted '2.' $C.LightBlue) + ' ' + (Get-Painted 'Create or update a sync group' $C.Bold) + $script:MenuSep + (Get-Painted '[pre-task]' $C.Mint) + $script:MenuSep + (Get-Painted 'cross-project .ai knowledge sync; asks before merging linked groups' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted '2.' $C.LightBlue) + ' ' + (Get-Painted 'Create or update a sync group' $C.Bold) + $script:MenuSep + (Get-Painted '[pre-task]' $C.Mint) + $script:MenuSep + (Get-Painted 'cross-project .ai knowledge sync by source path; asks before merging linked groups' $C.HintYellow))
         for ($i = 0; $i -lt $shippedHooks.Count; $i++) {
             Write-HookMenuLine ($i + 3) $shippedHooks[$i].Name
         }

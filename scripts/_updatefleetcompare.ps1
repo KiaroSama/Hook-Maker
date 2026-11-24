@@ -48,11 +48,12 @@ function Invoke-FleetCompare {
                 $actual = @(Get-InstalledManifest -RuntimeRoot $runtimeRoot -FriendlyName $name)
                 $difference = Compare-Manifest -Expected $expected -Actual $actual
                 $missingCount = @($difference.Missing).Count
-                $differentCount = @($difference.Modified).Count
+                $unexpectedCount = @($difference.Unexpected).Count
+                $differentCount = @($difference.Modified).Count + $unexpectedCount
                 # Several sync-group records share one runtime and only one can be
                 # named in its ownership metadata; the integrity check accepts the
                 # others, and so does this compare.
-                if ($missingCount -eq 0 -and $differentCount -eq 1 -and
+                if ($missingCount -eq 0 -and $unexpectedCount -eq 0 -and $differentCount -eq 1 -and
                     ([string]$difference.Modified[0]).EndsWith('/' + $script:RuntimeMetadataFileName, [System.StringComparison]::OrdinalIgnoreCase) -and
                     (Test-SiblingOwnedRuntime -ExpectedManifest $expected -RuntimeRoot $runtimeRoot -FriendlyName $name -Client $client `
                             -Scope $scope -ProjectRoot $target -RecordId (Get-FleetRecordField $record 'id'))) {

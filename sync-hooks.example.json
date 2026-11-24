@@ -8,24 +8,7 @@
     "initialSyncMode": "review",
     "maxFileBytes": 2097152,
     "includeExtensions": [
-      ".md",
-      ".txt",
-      ".json",
-      ".jsonc",
-      ".yaml",
-      ".yml",
-      ".toml",
-      ".ini",
-      ".cfg",
-      ".xml",
-      ".csv",
-      ".ps1",
-      ".py",
-      ".js",
-      ".ts",
-      ".mjs",
-      ".cjs",
-      ".sh"
+      ".md"
     ],
     "excludePatterns": [
       ".cross-project-sync/*",
@@ -67,10 +50,7 @@
       "*/.DS_Store"
     ],
     "reviewInstructions": [
-      "Import only durable, relevant, reusable knowledge.",
-      "Destination rules and project facts always take precedence.",
-      "Deduplicate and adapt instead of copying files wholesale.",
-      "Never transfer secrets, credentials, environment-specific values, logs, generated indexes, temporary task status, or unrelated project facts."
+      "Keep destination rules and project facts authoritative. Deduplicate generalized lessons before adding them."
     ]
   },
   "profiles": []
