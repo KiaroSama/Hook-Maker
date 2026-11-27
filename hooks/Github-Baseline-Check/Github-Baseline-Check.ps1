@@ -361,6 +361,13 @@ foreach ($info in $workflowInfos) {
     }
 }
 
+foreach ($info in $workflowInfos) {
+    if (($info.Name -notmatch '(?i)gitleaks') -and ($info.Text -notmatch '(?i)\bgitleaks\b')) { continue }
+    if (($info.Text -match '(?m)^ {4}if\s*:') -or ($info.Text -match '(?m)^ {2}push\s*:[^\n]*\n(?: {3,}[^\n]*\n|[ \t\r]*\n)*? {3,}paths(-ignore)?\s*:')) {
+        $workflowProblems += ($info.Name + ' push-skip defect: Gitleaks secret scan (push) must run green, never skipped (remove push if:/paths:)')
+    }
+}
+
 $meaningfulCi = $manualState.Compliant
 foreach ($problem in $manualState.Problems) { $workflowProblems += $problem }
 if (-not $meaningfulCi -and $hasCode) {

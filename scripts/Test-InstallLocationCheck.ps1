@@ -295,7 +295,13 @@ try {
     Check 'V95 1c: rust-anything doctor stays silent and allowed' ($raDoctor.Exit -eq 0 -and $raDoctor.Out.Trim() -eq '') $raDoctor.Out
     $raCodexOnly = Invoke-LocationHook -Client 'claude' -Payload @{ hook_event_name = 'PreToolUse'; cwd = $Project; session_id = 'ra-codex'; tool_name = 'Bash'; tool_input = @{ command = 'rust-anything setup --agent codex' } }
     Check 'V95 1c: rust-anything setup --agent codex stays silent' ($raCodexOnly.Exit -eq 0 -and $raCodexOnly.Out.Trim() -eq '') $raCodexOnly.Out
-    foreach ($file in @(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -Filter '*.ps1') + @(Get-Item (Join-Path $HooksRoot '_commandtokens.ps1'))) {
+    $relBuild = Invoke-LocationHook -Client 'claude' -Payload @{ hook_event_name = 'PreToolUse'; cwd = $Project; session_id = 'v103-rel'; tool_name = 'Bash'; tool_input = @{ command = 'cargo build --release' } }
+    Check 'V103: cargo build --release advises GitHub Actions CI and one <project>/bin/ binary' ($relBuild.Exit -eq 0 -and $relBuild.Out -match 'GitHub Actions CI builds releases' -and $relBuild.Out -match '<project>/bin/') $relBuild.Out
+    $relCopy = Invoke-LocationHook -Client 'claude' -Payload @{ hook_event_name = 'PreToolUse'; cwd = $Project; session_id = 'v103-cp'; tool_name = 'Bash'; tool_input = @{ command = 'cp target/release/app.exe dist/app.exe' } }
+    Check 'V103: copying a target/release .exe advises the single bin/ binary' ($relCopy.Exit -eq 0 -and $relCopy.Out -match 'ONE binary in <project>/bin/') $relCopy.Out
+    $cargoCheck = Invoke-LocationHook -Client 'claude' -Payload @{ hook_event_name = 'PreToolUse'; cwd = $Project; session_id = 'v103-chk'; tool_name = 'Bash'; tool_input = @{ command = 'cargo check' } }
+    Check 'V103: cargo check stays silent' ($cargoCheck.Exit -eq 0 -and $cargoCheck.Out.Trim() -eq '') $cargoCheck.Out
+    foreach ($file in @(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -Filter '*.ps1') +@(Get-Item (Join-Path $HooksRoot '_commandtokens.ps1'))) {
         $bytes = [IO.File]::ReadAllBytes($file.FullName)
         Check ('shipped source is pure ASCII: ' + $file.Name) (@($bytes | Where-Object { $_ -gt 127 }).Count -eq 0)
     }

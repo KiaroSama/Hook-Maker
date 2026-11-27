@@ -11,7 +11,7 @@
 # header; existing lines are never deleted or reordered.
 
 $script:EcosystemIgnoreLists = [ordered]@{
-    'Rust'        = @('/target/', '**/target/', '/debug/', '**/*.rs.bk', '*.pdb', '**/mutants.out*/', 'rustc-ice-*.txt', '/.cargo/*', '!/.cargo/config.toml', '**/.cargo/credentials*', '/vendor/', '*.profraw', '*.profdata', 'lcov.info', 'tarpaulin-report.*', 'cobertura.xml', 'flamegraph.svg', 'perf.data', 'perf.data.old', '/criterion/')
+    'Rust'        = @('/target/', '**/target/', '/bin/', '/debug/', '**/*.rs.bk', '*.pdb', '**/mutants.out*/', 'rustc-ice-*.txt', '/.cargo/', '**/.cargo/', '/vendor/', '*.profraw', '*.profdata', 'lcov.info', 'tarpaulin-report.*', 'cobertura.xml', 'flamegraph.svg', 'perf.data', 'perf.data.old', '/criterion/')
     'Python'      = @('__pycache__/', '*.py[cod]', '*.so', '.venv/', 'venv/', 'build/', 'dist/', '*.egg-info/', '.eggs/', '.pytest_cache/', '.mypy_cache/', '.ruff_cache/', '.tox/', '.nox/', '.coverage', '.coverage.*', 'htmlcov/', 'coverage.xml', '.hypothesis/', '.ipynb_checkpoints/', '__pypackages__/')
     'Node'        = @('node_modules/', 'dist/', 'build/', 'out/', '.next/', '.nuxt/', '.output/', '.svelte-kit/', '.turbo/', '.vercel/', '.wrangler/', 'coverage/', '.nyc_output/', '*.tsbuildinfo', '.eslintcache', '.cache/', '.parcel-cache/', 'npm-debug.log*', 'yarn-debug.log*', 'yarn-error.log*', '.pnpm-store/', '.yarn/*', '!.yarn/patches', '!.yarn/plugins', '!.yarn/releases')
     '.NET'        = @('[Bb]in/', '[Oo]bj/', '.vs/', '*.user', '*.suo', '*.rsuser', '[Tt]est[Rr]esult*/', '*.trx', 'artifacts/', '*.nupkg', '*.snupkg', '.nuget/packages/')
@@ -65,6 +65,10 @@ function Get-EcosystemIgnoreFinding {
         [void]$append.Add('# ' + $name)
         foreach ($item in $lack) { [void]$append.Add($item); [void]$have.Add((ConvertTo-EcosystemKey $item)) }
     }
+    $cargoNegation = $false
+    if (@(Get-ProjectEcosystems -Cwd $Cwd) -contains 'Rust') {
+        $cargoNegation = (@($ExistingLines | Where-Object { $_.Trim() -match '^!\s*/?\.cargo(?:/(?:config\.toml)?)?$' }).Count -gt 0)
+    }
     $written = 0
     if ($Mode -eq 'write' -and $missing.Count -gt 0) {
         $path = Join-Path $Cwd '.gitignore'
@@ -85,7 +89,7 @@ function Get-EcosystemIgnoreFinding {
             elseif ($TrackedFiles -notcontains $lock) { [void]$notes.Add($lock + ' untracked') }
         }
     }
-    return [pscustomobject]@{ Missing = $missing; Lockfiles = @($notes); Written = $written }
+    return [pscustomobject]@{ Missing = $missing; Lockfiles = @($notes); Written = $written; CargoNegation = $cargoNegation }
 }
 
 # One advisory line, or '' (nothing new). Said once per finding set per project.
@@ -106,6 +110,10 @@ function Get-EcosystemIgnoreLine {
     if (@($Finding.Lockfiles).Count -gt 0) {
         if ($line -ne '') { $line += "`n" }
         $line += 'Lockfiles must stay tracked: ' + (@($Finding.Lockfiles) -join ', ')
+    }
+    if ($Finding.PSObject.Properties['CargoNegation'] -and $Finding.CargoNegation) {
+        if ($line -ne '') { $line += "`n" }
+        $line += 'WARNING: .cargo/ takes zero exceptions; drop the !.cargo negation, never track or push .cargo/config.toml'
     }
     if ($line -eq '') { return '' }
     $state = Join-Path $env:LOCALAPPDATA ('HookMaker\state\IgnoreRulesCheck-eco-' + (Get-ShortHash $Cwd.ToLowerInvariant()) + '.txt')

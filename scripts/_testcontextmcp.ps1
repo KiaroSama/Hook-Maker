@@ -141,9 +141,32 @@ function Invoke-McpV102Regression {
     Check 'V102 slint-preview PreToolUse stays silent when slint@slint is disabled' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 }
 
+function Invoke-McpV103Regression {
+    . (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks/_mcpdisable.ps1')
+    . (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks/Mcp-Usage-Check/_connectortriggers.ps1')
+    Check 'V103 no Reddit MCP connector in triggers or plugin map' (
+        -not (@($script:ConnectorTriggers | Where-Object { $_.Connector -match 'Reddit' -or $_.Route -match 'Reddit MCP' })) -and
+        -not (@($script:PluginMcpConnectorMap.Values | ForEach-Object { @($_) } | Where-Object { $_ -match 'Reddit' })) -and
+        -not (@($script:PluginMcpConnectorMap.Keys | Where-Object { $_ -match 'Reddit' })))
+    Check 'V103 Scrapling-Server trigger is first in priority order' ($script:ConnectorTriggers[0].Connector -eq 'Scrapling-Server')
+    $p103 = New-Proj 'McpV103'
+    $i = 0
+    foreach ($prompt in @('Do a web search for PowerShell hook timeouts and check the library docs', 'Look up the Reddit thread about hook timeouts', 'Check the subreddit and forum discussion on bot-clone')) {
+        $i++
+        $r = Fire -HookPath $McpHook -Cwd $p103 -RawStdin (New-PromptStdin $p103 'UserPromptSubmit' $prompt ('v103-web-' + $i))
+        Check ('V103 Scrapling-Server fires first for prompt ' + $i) ($r.Out -match 'CONNECTORS first:[^\r\n]*Scrapling-Server' -and $r.Out -match 'scrapling-official' -and $r.Out -notmatch 'Reddit MCP|Reddit-mcp') $r.Out
+    }
+    $r = Fire -HookPath $McpHook -Cwd $p103 -RawStdin (New-PromptStdin $p103 'UserPromptSubmit' 'Rename the helper function in src/util.ps1' 'v103-local')
+    Check 'V103 ordinary local code prompt does not fire Scrapling-Server' ($r.Out -notmatch 'Scrapling-Server') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $p103 -RawStdin (New-PromptStdin $p103 'UserPromptSubmit' 'Port the parser to Rust' 'v103-rust')
+    Check 'V103 rust-anything route names 5.0.1 and 24 tools' ($r.Out -match 'rust-anything' -and $r.Out -match '5\.0\.1' -and $r.Out -match '24 tools') $r.Out
+    Check 'V103 rust-anything gate note names 5.0.1 and 24 tools' ($script:NoteRustAnything -match '5\.0\.1' -and $script:NoteRustAnything -match '24 tools')
+}
+
     Invoke-McpGatewayRegression (Split-Path -Parent $PSScriptRoot)
     Invoke-McpV101Regression
     Invoke-McpV102Regression
+    Invoke-McpV103Regression
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: input handling ---' -ForegroundColor Cyan
     $plain = New-Proj 'Plain'
@@ -321,7 +344,7 @@ function Invoke-McpV102Regression {
     $mcpTrig = New-Proj 'McpTrigger'
     $r = Fire -HookPath $McpHook -Cwd $mcpTrig -RawStdin (New-PromptStdin -Cwd $mcpTrig -EventName 'UserPromptSubmit' -Prompt 'scrape https://example.com and summarise it' -SessionId 'mcp-t1')
     Check '105 1a: a URL prompt names Scrapling + scrapling-official in one CONNECTORS line' (
-        $r.Out -match 'CONNECTORS first: URL/web page -> Scrapling-Server \+ skill anthropic-skills:scrapling-official') $r.Out
+        $r.Out -match 'CONNECTORS first: web search/fetch/crawl/community/Reddit -> Scrapling-Server \+ skill anthropic-skills:scrapling-official') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $mcpTrig -RawStdin (New-PromptStdin -Cwd $mcpTrig -EventName 'UserPromptSubmit' -Prompt 'what happens in clip.mp4 at the end' -SessionId 'mcp-t2')
     Check '105 4c: a video prompt names rea-video skill then rea-video decompose' ($r.Out -match 'rea-video:rea-video skill, then rea-video decompose') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $mcpTrig -RawStdin (New-PromptStdin -Cwd $mcpTrig -EventName 'UserPromptSubmit' -Prompt 'fix a typo in the readme' -SessionId 'mcp-t3')

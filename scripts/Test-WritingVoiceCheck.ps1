@@ -117,6 +117,13 @@ try {
     Check 'prompt: English -> humanizer' ((($rEn.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext) -match 'English -> Skill `humanizer:humanizer`') $rEn.Out
     $rOther = Fire -Cwd $p -EventName 'UserPromptSubmit' -SessionId 'u3' -Prompt $OtherPrompt
     Check 'prompt: an unmapped language is silent' ($rOther.Exit -eq 0 -and $rOther.Out -eq '') $rOther.Out
+    $rTg = Fire -Cwd $p -EventName 'UserPromptSubmit' -SessionId 'u4' -Prompt 'please add /language to the Telegram bot'
+    Check 'prompt: Telegram bot prompt adds the English-only log channel note' ($rTg.Out -match 'Telegram log channels stay English-only') $rTg.Out
+    $tgDir = New-Proj 'TgManifest'
+    [IO.File]::WriteAllText((Join-Path $tgDir 'package.json'), '{"dependencies":{"grammy":"1.0.0"}}')
+    $rTgM = Fire -Cwd $tgDir -EventName 'UserPromptSubmit' -SessionId 'u5' -Prompt $EnglishPrompt
+    Check 'prompt: Telegram manifest dependency adds the note' ($rTgM.Out -match 'Telegram log channels stay English-only') $rTgM.Out
+    Check 'prompt: non-Telegram English prompt carries no Telegram note' ($rEn.Out -notmatch 'Telegram') $rEn.Out
 
     Write-Host ''
     Write-Host '--- Stop gate over the complete transcript ---' -ForegroundColor Cyan

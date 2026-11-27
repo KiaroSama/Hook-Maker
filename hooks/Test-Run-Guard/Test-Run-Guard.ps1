@@ -134,6 +134,7 @@ if ($null -eq (Get-Command -Name 'Remove-InlineDataBlocks' -ErrorAction Silently
     function Remove-InlineDataBlocks { param([string]$Text) return $Text }
 }
 . (Join-Path $PSScriptRoot '_commandanalysis.ps1')
+. (Join-Path $PSScriptRoot '_localbuildguard.ps1')
 # Silent Execution (global-test-rules.md): would this INVOCATION open a window,
 # whatever the runner does inside it? Optional, like every sibling module, so a
 # runtime copied before it existed keeps the older behaviour rather than failing
@@ -345,8 +346,16 @@ if ($eventName -eq 'PreToolUse') {
     $blindWait = Get-BlindWaitFinding -Tokens $tokens -MaxBlindSleepSeconds $maxBlindSleepSeconds
     if ($null -ne $blindWait) {
         $blindMsg = '' + $blindWait.Reason + '. ' + $blindWait.SafePattern + $configNote
+        if (@($tokens | Where-Object { (Get-ProgramName $_) -eq 'gh' }).Count -gt 0) { $blindMsg += ' For CI: silent background wait with installed jq (G:\Program Files\jq\jq.exe, jq-1.8.2) + gh --jq.' }
         if ($advisoryOnly) { Write-Advisory -EventName 'PreToolUse' -Message ('ADVISORY ONLY (TEST_GUARD_ADVISORY_ONLY=1) - ' + $blindMsg) }
         Write-Deny -Message $blindMsg
+    }
+    if (Get-BoolSetting $config 'ALLOW_LOCAL_HEAVY_BUILD' $false) { $env:ALLOW_LOCAL_HEAVY_BUILD = '1' }
+    $localBuild = Get-LocalHeavyBuildFinding -Tokens $tokens -ProjectRoot $projectRoot
+    if ($null -ne $localBuild) {
+        $buildMsg = 'LOCAL HEAVY BUILD: ' + $localBuild.CommandSummary + '. ' + $localBuild.Reason + $configNote
+        if ($advisoryOnly) { Write-Advisory -EventName 'PreToolUse' -Message ('ADVISORY ONLY (TEST_GUARD_ADVISORY_ONLY=1) - ' + $buildMsg) }
+        Write-Deny -Message $buildMsg -Condition 'required-workflow'
     }
     $runnerStop = if (Get-Command -Name 'Get-RunnerStopFinding' -ErrorAction SilentlyContinue) { Get-RunnerStopFinding -Tokens $tokens -ProjectRoot $projectRoot } else { $null }
     if ($null -ne $runnerStop) { if ($runnerStop.Deny -and -not $advisoryOnly) { Write-Deny -Message ($runnerStop.Message + $configNote) -Condition 'data-loss' }; Write-Advisory -EventName 'PreToolUse' -Message ($runnerStop.Message + $configNote) }

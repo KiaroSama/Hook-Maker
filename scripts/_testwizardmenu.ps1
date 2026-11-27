@@ -71,8 +71,25 @@
     # $allShippedHookCount, but this single render of the hook list still
     # shows it exactly once alongside the real per-hook entries.
     Check 'every shipped hook renders exactly one valid, non-empty timing tag' (($preTagCount + $postTagCount + $bothTagCount) -eq ($allShippedHookCount + 1)) ('pre=' + $preTagCount + ' post=' + $postTagCount + ' both=' + $bothTagCount + ' expected=' + ($allShippedHookCount + 1))
-    Check 'listing shows short descriptions' ($r.Out -match 'relevant \.ai context files' -and $r.Out -match 'routes rules and language choices; confirms rules at the end')
-    Check 'menu parts are pipe-separated' ($r.Out -match 'Create or update a sync group \| \[pre-task\] \| cross-project \.ai knowledge sync by source path; asks before merging linked groups')
+    Check 'listing shows short descriptions' ($r.Out -match 'relevant \.ai context files' -and $r.Out -match 'routes rules and language choices; confirms at the end')
+    Check 'menu parts are pipe-separated' ($r.Out -match 'Create or update a sync group \| \[pre-task\] \| sync .ai knowledge across projects')
+    # Single-line menu budget: ANSI-stripped, one physical line per row. Static rows (1, 2, 33..37) <= 90 cols, shipped hook rows (3..32) <= 95.
+    $plainMenu = [regex]::Replace([string]$r.Out, "\x1b\[[0-9;]*m", '')
+    # Only the first hook list (Available hooks ... Tip): later screens in this run reuse the same numbers for other choices.
+    $allLines = @($plainMenu -split "\r?\n")
+    $listStart = [Array]::FindIndex($allLines, [Predicate[string]]{ param($l) $l -match 'Available hooks' })
+    $listEnd = [Array]::FindIndex($allLines, [Predicate[string]]{ param($l) $l -match '^\s+Tip: ' })
+    $menuLines = if ($listStart -ge 0 -and $listEnd -gt $listStart) { @($allLines[$listStart..$listEnd]) } else { @() }
+    $rowOf = { param($n) @($menuLines | Where-Object { $_ -match ('^  ' + $n + '\. ') } | Select-Object -Unique) }
+    $item2Rows = @(& $rowOf 2)
+    Check 'item 2 renders on one line, <= 90 visible columns' ($item2Rows.Count -eq 1 -and $item2Rows[0].Length -le 90 -and $item2Rows[0] -notmatch "[`r`n]") ($item2Rows -join '|')
+    # Row 1 grows a second span when a stray custom fixture exists, so it is held to 90 columns only for the plain 3-32 span.
+    $staticRows = @(2, 33, 34, 35, 36, 37)
+    if ($plainMenu -notmatch 'install every hook below \(3-32 and ') { $staticRows = @(1) + $staticRows }
+    $wideStatic = @($staticRows | Where-Object { $x = @(& $rowOf $_); $x.Count -ne 1 -or $x[0].Length -gt 90 })
+    Check 'static rows 1, 2, 33..37 each render <= 90 visible columns' ($wideStatic.Count -eq 0) ('too wide or missing: ' + ($wideStatic -join ','))
+    $wideHooks = @(3..32 | Where-Object { $x = @(& $rowOf $_); $x.Count -ne 1 -or $x[0].Length -gt 95 })
+    Check 'shipped hook rows 3..32 each render <= 95 visible columns' ($wideHooks.Count -eq 0) ('too wide or missing: ' + ($wideHooks -join ','))
     $menuOrder = @(
         '1\. Select all hooks', '2\. Create or update a sync group', '3\. Ai-Context-Check',
         '4\. Ai-Context-Load', '5\. Ci-Status-Check', '6\. Dependabot-Check',

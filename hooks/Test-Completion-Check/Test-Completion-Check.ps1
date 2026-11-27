@@ -504,7 +504,7 @@ if ($activePid -gt 0) {
     Save-CompletionState
     Write-Finding -Blocking $true -Lines @(
         'STILL ACTIVE owner ' + $activePid + '; UNKNOWN.',
-        'Wait until ALL checks finish (silent background watcher); no mid-run edits/piecemeal fixes, then batch-fix all failures once; no pre-exit result.')
+        'Wait until ALL checks finish (silent background watcher; jq/gh --jq); no mid-run edits/piecemeal fixes, then batch-fix all failures once; no pre-exit result.')
 }
 
 # ---- 1b. a guarded run DIED without recording how it ended (OWNERLESS) -----
@@ -634,4 +634,24 @@ if ($script:DeepDebugActive) {
 if ($timingRegressionLines.Count -gt 0) { Write-Finding -Blocking $false -Lines $timingRegressionLines }
 Write-UnknownNoteDiagnostic
 Write-SurvivorAdvisory
+# V103: one canonical compiled binary in <project>\bin; checks only 4 exact directories + root, no walk.
+try {
+    $binDir = Join-Path $cwd 'bin'
+    if (-not [string]::IsNullOrWhiteSpace($cwd) -and [IO.Directory]::Exists($binDir)) {
+        $dupes = New-Object System.Collections.Generic.List[string]
+        foreach ($exe in @([IO.Directory]::GetFiles($binDir, '*.exe') | Select-Object -First 20)) {
+            $leaf = [IO.Path]::GetFileName($exe)
+            foreach ($rel in @('target\release', 'dist', 'build', '')) {
+                if ([IO.File]::Exists((Join-Path (Join-Path $cwd $rel) $leaf))) { [void]$dupes.Add((Join-Path $rel $leaf).TrimStart('\')) }
+            }
+        }
+        if ($dupes.Count -gt 0) {
+            $dupeState = Join-Path $stateDir ('TestCompletionCheck-bindup-' + (Get-ShortHash (($cwd.ToLowerInvariant()) + '|' + ($dupes -join '|'))) + '.txt')
+            if (-not [IO.File]::Exists($dupeState)) {
+                [IO.File]::WriteAllText($dupeState, '1')
+                Write-Finding -Blocking $false -Lines @('TEST COMPLETION CHECK: duplicate compiled binary: ' + (($dupes | Select-Object -First 5) -join ', ') + '.', 'Keep ONE canonical copy ONLY in <project>/bin/; wire all paths/launchers/tests to bin/.')
+            }
+        }
+    }
+} catch { }
 exit 0 } catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw } finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

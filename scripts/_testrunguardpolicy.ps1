@@ -152,3 +152,28 @@
     Check 'RL-D2 with no recorded language the deny carries no LANGUAGE line' (
         ($rRl.Out -match '"additionalContext"|"systemMessage"' -and $rRl.Out -notmatch '"permissionDecision"|"decision"') -and (Get-Message $rRl.Out) -notmatch 'LANGUAGE:') $rRl.Out
 
+
+    # =====================================================================
+    Write-Host '--- V103: local heavy/release builds are GitHub-only; lightweight checks pass ---' -ForegroundColor Cyan
+    $hcLb = New-IsolatedHookCopy
+    foreach ($heavy in @('cargo build --release', 'cargo build -r', 'cargo build --profile release', 'cargo zigbuild --release', 'cross build --release --target aarch64-unknown-linux-gnu', 'dotnet publish -c Release -r win-x64', 'cmake --build out --config Release', 'msbuild app.sln /p:Configuration=Release', 'GOOS=linux GOARCH=arm64 go build ./...')) {
+        $rLb = Fire -HookPath $hcLb.Script -Cwd $Proj -EventName 'PreToolUse' -Command $heavy -LocalAppData $hcLb.LocalAppData
+        Check ('V103 heavy build flagged: ' + $heavy) ((Get-Message $rLb.Out) -match 'LOCAL HEAVY BUILD' -and (Get-Message $rLb.Out) -match 'GitHub Actions CI is the sole build route' -and (Get-Message $rLb.Out) -match '<project>/bin/<binary>\.exe') $rLb.Out
+    }
+    foreach ($light in @('cargo check', 'cargo clippy --all-targets', 'cargo test', 'cargo build', 'go vet ./...', 'npm run build', 'dotnet build')) {
+        $rLb = Fire -HookPath $hcLb.Script -Cwd $Proj -EventName 'PreToolUse' -Command $light -LocalAppData $hcLb.LocalAppData
+        Check ('V103 lightweight command not flagged: ' + $light) ((Get-Message $rLb.Out) -notmatch 'LOCAL HEAVY BUILD') $rLb.Out
+    }
+    $hcLbAdv = New-IsolatedHookCopy -EnvOverrides @{ TEST_GUARD_ADVISORY_ONLY = '1' }
+    $rLb = Fire -HookPath $hcLbAdv.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'cargo build --release' -LocalAppData $hcLbAdv.LocalAppData
+    Check 'V103 advisory mode reports the heavy build without a deny' ($rLb.Out -notmatch '"permissionDecision":"deny"' -and (Get-Message $rLb.Out) -match 'ADVISORY ONLY.*LOCAL HEAVY BUILD') $rLb.Out
+    $hcLbAllow = New-IsolatedHookCopy -EnvOverrides @{ ALLOW_LOCAL_HEAVY_BUILD = '1' }
+    $rLb = Fire -HookPath $hcLbAllow.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'cargo build --release' -LocalAppData $hcLbAllow.LocalAppData
+    Check 'V103 ALLOW_LOCAL_HEAVY_BUILD=1 bypasses the finding' ((Get-Message $rLb.Out) -notmatch 'LOCAL HEAVY BUILD') $rLb.Out
+    $hcLbBill = New-IsolatedHookCopy
+    $lbState = Join-Path $hcLbBill.LocalAppData 'HookMaker\state'; [void][IO.Directory]::CreateDirectory($lbState)
+    [IO.File]::WriteAllLines((Join-Path $lbState 'CiStatusCheck-External-abc123.txt'), @('sha', 'owner/repo', 'account-billing', 'spending limit reached (billing)', '2026-11-27T00:00:00Z', 'fp', '2026-11-27T00:00:00Z'))
+    $rLb = Fire -HookPath $hcLbBill.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'cargo build --release' -LocalAppData $hcLbBill.LocalAppData
+    Check 'V103 confirmed CI billing block bypasses the finding' ((Get-Message $rLb.Out) -notmatch 'LOCAL HEAVY BUILD') $rLb.Out
+    $rLb = Fire -HookPath $hcLb.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'gh run watch 123; sleep 300' -LocalAppData $hcLb.LocalAppData
+    Check 'V103 blind CI wait hint names installed jq (jq-1.8.2) and gh --jq' ((Get-Message $rLb.Out) -match 'jq-1\.8\.2' -and (Get-Message $rLb.Out) -match 'gh --jq') $rLb.Out

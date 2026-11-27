@@ -43,7 +43,7 @@
         'git status --porcelain',
         'npm run build',
         'npm install --no-audit',
-        'cargo build --release',
+        'cargo check',
         'go vet ./...',
         'dotnet build',
         'Copy-Item .\tests\fixtures\sample.json .\out\sample.json',

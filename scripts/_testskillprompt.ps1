@@ -69,6 +69,37 @@
         $spBoth.Out -match $spCodeqlOffered -and $spBoth.Out -notmatch 'sample-create-new-file') $spBoth.Out
 
     # =====================================================================
+    Write-Host '--- Skills-Check V103: new/updated plugin skills match prompts ---' -ForegroundColor Cyan
+    $v103Cache = New-PluginCache 'v103-plugin-cache' @{
+        'revayat-scientific' = @('revayat-scientific')
+        'revayat-subtitle'   = @('revayat-subtitle-sync')
+        'telegram-operator'  = @('bot-clone')
+    }
+    $v103Reg = Join-Path $Work 'v103-installed.json'
+    Write-Utf8 $v103Reg (@{
+        plugins = @{
+            'revayat-scientific@revayat-scientific-skill' = @(@{ scope = 'user'; installPath = (Join-Path $v103Cache 'market/revayat-scientific/1.0.0'); version = '2.2.3' })
+            'revayat-subtitle@revayat-subtitle-skill'     = @(@{ scope = 'user'; installPath = (Join-Path $v103Cache 'market/revayat-subtitle/1.0.0'); version = '3.0.3' })
+            'telegram-operator@telegram-operator'         = @(@{ scope = 'user'; installPath = (Join-Path $v103Cache 'market/telegram-operator/1.0.0'); version = '1.6.0' })
+        }
+    } | ConvertTo-Json -Depth 6)
+    $v103Hook = New-ConfiguredSkillsHookCopy -EnvOverrides @{
+        SKILLS_DIR = (Join-Path $Work 'no-such-library')
+        GLOBAL_SKILLS_DIR = (Join-Path $Work 'no-such-global')
+        PLUGIN_SKILLS_ROOT = $v103Cache
+        CLAUDE_PLUGINS_FILE = $v103Reg
+    }
+    $v103Proj = New-Proj 'SkillsV103'
+    foreach ($case in @(
+        @{ Id = 'sci'; Prompt = 'use revayat scientific to translate this paper'; Want = 'revayat-scientific:revayat-scientific' },
+        @{ Id = 'sub'; Prompt = 'run revayat subtitle sync on this episode'; Want = 'revayat-subtitle:revayat-subtitle-sync' },
+        @{ Id = 'bot'; Prompt = 'use bot-clone to clone the telegram bot'; Want = 'telegram-operator:bot-clone' }
+    )) {
+        $rV103 = Fire -HookPath $v103Hook -Cwd $v103Proj -RawStdin (New-PromptStdin -Cwd $v103Proj -EventName 'UserPromptSubmit' -Prompt $case.Prompt -SessionId ('v103-' + $case.Id))
+        Check ('V103 prompt offers ' + $case.Want) ($rV103.Out -match [regex]::Escape($case.Want)) $rV103.Out
+    }
+
+    # =====================================================================
     Write-Host '--- Skills-Check V95: rust-anything vs translate-programming-language & .disabled-by-policy ---' -ForegroundColor Cyan
     $v95Cache = New-PluginCache 'v95-plugin-cache' @{
         'rust-anything'    = @('rust-anything')

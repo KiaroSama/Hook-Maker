@@ -33,6 +33,7 @@ function Get-ReleaseMatrixFinding {
         # arm64 gaps only where the matching x64 target is already built.
         if ($text -match '(?i)(windows-|pc-windows|win-x64)') { if ($text -notmatch $script:ReleaseArmPatterns['Windows arm64']) { [void]$found.Add('no Windows arm64') } }
         if ($text -match '(?i)(ubuntu-|unknown-linux|linux-x64|linux/amd64)') { if ($text -notmatch $script:ReleaseArmPatterns['Linux arm64']) { [void]$found.Add('no Linux arm64') } }
+        if ($text -notmatch '(?i)(SHA256SUMS|\.sig\b|attest-build-provenance|gh release upload|action-gh-release)') { [void]$found.Add('no signed asset upload (SHA256SUMS/.sig/attestation)') }
         if ($found.Count -gt 0) { [void]$issues.Add('- ' + $file.Name + ': ' + ($found -join '; ')) }
     }
     return @($issues)
@@ -43,7 +44,7 @@ function Get-ReleaseMatrixNote {
     param([Parameter(Mandatory = $true)][string]$ProjectRoot)
     $issues = @(Get-ReleaseMatrixFinding -ProjectRoot $ProjectRoot)
     if ($issues.Count -eq 0) { return '' }
-    $note = 'RELEASE MATRIX: Windows+Linux x64/arm64; no 32-bit/macOS unless asked (global-architecture-rules.md Release build matrix).' + "`n" + ($issues -join "`n")
+    $note = 'RELEASE MATRIX: Windows+Linux x64/arm64; no 32-bit/macOS unless asked (global-architecture-rules.md Release build matrix). Every published GitHub Release for a compiled project attaches ready-to-download signed binaries/archives for every matrix target plus SHA256SUMS, .sig, and attestations so users never build from source.' + "`n" + ($issues -join "`n")
     $state = Join-Path $env:LOCALAPPDATA ('HookMaker\state\GithubBaselineCheck-matrix-' + (Get-ShortHash $ProjectRoot.ToLowerInvariant()) + '.txt')
     $fp = Get-ShortHash $note
     try { if ([IO.File]::Exists($state) -and ([IO.File]::ReadAllText($state)).Trim() -eq $fp) { return '' } } catch { }

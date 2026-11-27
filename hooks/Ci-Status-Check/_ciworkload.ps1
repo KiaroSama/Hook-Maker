@@ -9,6 +9,7 @@ $ciProofRoot = if ([IO.File]::Exists((Join-Path $PSScriptRoot '_ciprovenance.ps1
 . (Join-Path $PSScriptRoot '_cipagination.ps1')
 . (Join-Path $PSScriptRoot '_civisibility.ps1')
 . (Join-Path $PSScriptRoot '_ciauxiliary.ps1')
+. (Join-Path $PSScriptRoot '_cigitleaks.ps1')
 
 function Read-CiWorkloadApi {
     param([string]$Endpoint)
@@ -105,11 +106,13 @@ function Get-CiRunSnapshot {
     $project=@($all|Where-Object{[string]$_.path-cmatch'^\.github/workflows/[^/]+\.ya?ml$'})
     $auxiliary=@($all|Where-Object{[string]$_.path-cnotmatch'^\.github/workflows/[^/]+\.ya?ml$'})
     $pending=New-Object Collections.Generic.List[string];$failed=New-Object Collections.Generic.List[string]
+    $gitleaksDefects=New-Object Collections.Generic.List[string]
     $infra=New-Object Collections.Generic.List[string];$parts=New-Object Collections.Generic.List[string]
     foreach($run in $all){
         $entry='run '+$run.id
         $parts.Add(([string]$run.id+'|'+$run.run_attempt+'|'+$run.path+'|'+$run.status+'|'+$run.conclusion))
         if($run.status-cne'completed'){$pending.Add($entry)}
+        elseif($run.conclusion-ceq'skipped'-and((Test-IsGitleaksCheck ([string]$run.path+' '+[string]$run.name)))){$gitleaksDefects.Add('Gitleaks / Gitleaks secret scan (push) skipped ('+$entry+'; workflow defect: must execute green on push, never skipped)')}
         elseif($run.conclusion-cin@('failure','startup_failure')){$failed.Add($entry)}
         elseif($run.conclusion-cne'success'){$infra.Add($entry+' ['+$run.conclusion+']')}
     }
@@ -231,6 +234,7 @@ function Get-CiRunSnapshot {
         $checkParts=New-Object Collections.Generic.List[string]
         foreach($check in $cr){
             if([string](Get-Field $check 'id')-cnotmatch'^[1-9][0-9]*$'-or-not$checkIds.Add([string](Get-Field $check 'id'))-or(Get-Field $check 'head_sha')-cne$Sha){$checksComplete=$false;$commitChecksSafe=$false}
+            if((Get-Field $check 'conclusion')-ceq'skipped'-and(Test-IsGitleaksCheck ([string](Get-Field $check 'name')))){[void]$skippedCheckIds.Remove([string](Get-Field $check 'id'));$gitleaksDefects.Add('Gitleaks / '+[string](Get-Field $check 'name')+' (push) skipped (workflow defect: must execute green on push, never skipped)')}
             $expectedConclusion=if($skippedCheckIds.Contains([string](Get-Field $check 'id'))){'skipped'}else{'success'}
             if((Get-Field $check 'status')-cne'completed'-or(Get-Field $check 'conclusion')-cne$expectedConclusion){$commitChecksSafe=$false}
             $checkParts.Add('check|'+(Get-Field $check 'id')+'|'+(Get-Field $check 'status')+'|'+(Get-Field $check 'conclusion'))
@@ -248,6 +252,7 @@ function Get-CiRunSnapshot {
     }
     $billing=@()
     if($failed.Count-gt0-and(Get-Command Test-CiBillingBlocked -ErrorAction SilentlyContinue)-and(Test-CiBillingBlocked -RepoSlug $RepoSlug -Sha $Sha)){$billing=$failed.ToArray();$failed.Clear()}
+    foreach($defect in $gitleaksDefects){if(-not$failed.Contains($defect)){$failed.Add($defect)}}
     if($proven-and$proofRuns.Count-ne@($expected.Workflows).Count){$proven=$false}
     $allSuccess=$proven-and$project.Count-gt0-and$pending.Count-eq0-and$failed.Count-eq0-and$infra.Count-eq0-and$billing.Count-eq0
     [string[]]$orderedParts=$parts.ToArray();[Array]::Sort($orderedParts,[StringComparer]::Ordinal)

@@ -279,6 +279,7 @@ try {
     . (Join-Path $PSScriptRoot '_testbadgematrix.ps1')
     Invoke-BadgeFormatRegression
     Invoke-ReleaseMatrixRegression
+    Invoke-GitleaksPushSkipRegression
 
     Write-Host '--- self-hosted runners stay manual (plan 012 step 6b) ---' -ForegroundColor Cyan
     $shRepo = New-GitRepo 'selfhostedpush' -GithubRemote:$false

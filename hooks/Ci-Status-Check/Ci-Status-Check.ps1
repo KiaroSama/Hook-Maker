@@ -207,7 +207,7 @@ function Get-PushedHeadInfo {
 # True ONLY when the commit's failure is a GitHub account billing/payment/
 # spending-limit block, proven by GitHub's OWN check-run annotations - never
 # inferred from step counts. Reads the COMPLETE, paginated set of check-runs for
-# the commit (raw JSON, no jq), verifying the fetched count reaches the reported
+# the commit (raw JSON), verifying the fetched count reaches the reported
 # total_count, then the (paginated) annotations of each FAILING one, and requires
 # EVERY failing check-run in that complete set to carry the billing annotation.
 # Fails CLOSED (returns $false, so the caller keeps treating the runs as a
@@ -284,6 +284,7 @@ function Test-CiBillingBlocked {
     return $sawBilling
 }
 
+. (Join-Path $PSScriptRoot '_cigitleaks.ps1')
 . (Join-Path $PSScriptRoot '_ciworkload.ps1')
 
 # ---- explicit CLI action: record an evidenced, CI-verified external blocker ----
@@ -411,7 +412,7 @@ function Write-Block {
     param([string]$Outcome, [string]$Reason, [switch]$Watch)
     Save-State -Outcome $Outcome
     if ($Watch) {
-        $Reason += ' Use a silent background watcher until ALL jobs finish (GitHub CI and local CI/test runs); no mid-wait updates or piecemeal fixes before all finish, then batch-fix all failures once.'
+        $Reason += ' Use a silent background watcher until ALL jobs finish (installed jq-1.8.2 + gh --jq; GitHub CI and local CI/test runs); no mid-wait updates or piecemeal fixes before all finish, then batch-fix all failures once.'
     }
     $evidence = Get-Variable -Name snapshot -ValueOnly -ErrorAction SilentlyContinue
     $evidenceKey = $script:sha + '|' + $Outcome
@@ -587,6 +588,8 @@ if ($null -eq $snapshot) {
     }
 }
 
+$gitleaksDefects = @(Get-GitleaksWorkflowSkipDefects -ProjectRoot $cwd)
+if ($gitleaksDefects.Count -gt 0) { Write-Block -Outcome 'failed' -Reason ('Gitleaks workflow defect: ' + ($gitleaksDefects -join '; ')) }
 if ($snapshot.Runs.Count -eq 0 -and $snapshot.FailedRuns.Count -eq 0 -and $snapshot.InfraRuns.Count -eq 0 -and $snapshot.PendingRuns.Count -eq 0 -and $snapshot.BillingRuns.Count -eq 0) {
     $workflowsDir = Join-Path $cwd '.github\workflows'
     $hasWorkflows = $false

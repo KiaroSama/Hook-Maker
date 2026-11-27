@@ -87,15 +87,15 @@ function Invoke-InstallExistingHook {
 
         Write-MenuTitle 'Available hooks (hooks\):'
         Write-Host ('  ' + (Get-Painted '1.' $C.LightBlue) + ' ' + (Get-Painted 'Select all hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[all]' $C.Orchid) + $script:MenuSep + (Get-Painted ('run the sync group (2) and install every hook below (' + $hookSpans + ')') $C.HintYellow))
-        Write-Host ('  ' + (Get-Painted '2.' $C.LightBlue) + ' ' + (Get-Painted 'Create or update a sync group' $C.Bold) + $script:MenuSep + (Get-Painted '[pre-task]' $C.Mint) + $script:MenuSep + (Get-Painted 'cross-project .ai knowledge sync by source path; asks before merging linked groups' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted '2.' $C.LightBlue) + ' ' + (Get-Painted 'Create or update a sync group' $C.Bold) + $script:MenuSep + (Get-Painted '[pre-task]' $C.Mint) + $script:MenuSep + (Get-Painted 'sync .ai knowledge across projects' $C.HintYellow))
         for ($i = 0; $i -lt $shippedHooks.Count; $i++) {
             Write-HookMenuLine ($i + 3) $shippedHooks[$i].Name
         }
-        Write-Host ('  ' + (Get-Painted ([string]$updateIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Update installed hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'refresh installed copies from their current source' $C.HintYellow))
-        Write-Host ('  ' + (Get-Painted ([string]$statusIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Get hook status' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'scan a path for installed hooks (skips dependency caches) and track results' $C.HintYellow))
-        Write-Host ('  ' + (Get-Painted ([string]$uninstallIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Uninstall installed hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'list and remove installed hooks; never deletes hook sources' $C.HintYellow))
-        Write-Host ('  ' + (Get-Painted ([string]$resetIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Reset sync groups' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'remove every sync group from the config; installs and files untouched' $C.HintYellow))
-        Write-Host ('  ' + (Get-Painted ([string]$relocateIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Fix a renamed or moved project' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'repoint hooks whose project folder was renamed or moved' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted ([string]$updateIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Update installed hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'refresh installed hooks from current source' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted ([string]$statusIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Get hook status' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'scan a path for installed hooks and track results' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted ([string]$uninstallIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Uninstall installed hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'remove installed hooks (keeps sources)' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted ([string]$resetIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Reset sync groups' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'clear sync groups from config (files untouched)' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted ([string]$relocateIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Fix a renamed or moved project' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'repoint hooks for a moved folder' $C.HintYellow))
         for ($i = 0; $i -lt $customHooks.Count; $i++) {
             Write-HookMenuLine ($customStartIndex + $i) $customHooks[$i].Name
         }

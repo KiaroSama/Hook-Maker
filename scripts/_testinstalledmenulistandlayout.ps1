@@ -211,8 +211,8 @@
             # node_modules/.next/... - the row states what the scan DOES, and a
             # scan that no longer walks those trees must say so rather than let
             # the reader assume full coverage.
-            Check 'menu: 34 renders EXACTLY the contract row' ([string]$rows[34] -eq 'Get hook status | [manage] | scan a path for installed hooks (skips dependency caches) and track results') ([string]$rows[34])
-            Check 'menu: 35 renders EXACTLY the contract row' ([string]$rows[35] -eq 'Uninstall installed hooks | [manage] | list and remove installed hooks; never deletes hook sources') ([string]$rows[35])
+            Check 'menu: 34 renders EXACTLY the contract row' ([string]$rows[34] -eq 'Get hook status | [manage] | scan a path for installed hooks and track results') ([string]$rows[34])
+            Check 'menu: 35 renders EXACTLY the contract row' ([string]$rows[35] -eq 'Uninstall installed hooks | [manage] | remove installed hooks (keeps sources)') ([string]$rows[35])
 
             # The fixture is the only custom hook, so the custom block starts at
             # 38 - i.e. adding a custom hook did NOT shift 3-37 at all.
@@ -236,13 +236,14 @@
             $newRowNumbers = @($newRowNames | ForEach-Object { Get-RenderedIndex $rows ('^' + [regex]::Escape($_) + ' \|') })
             Check 'menu: every short-by-design row was located by name' (
                 @($newRowNumbers | Where-Object { $_ -lt 1 }).Count -eq 0) (($newRowNames -join ',') + ' -> ' + ($newRowNumbers -join ','))
-            $existingRowLengths = @(@($rows.Keys) |
-                Where-Object { $_ -ge 3 -and $_ -le ($updateIndex - 1) -and $newRowNumbers -notcontains $_ } |
-                ForEach-Object { ('  ' + $_ + '. ' + [string]$rows[$_]).Length })
-            $rowBudget = (@($existingRowLengths | Sort-Object -Descending)[0])
+            $rowBudget = 95 # visible columns per shipped hook row (ANSI already stripped here)
+            $allShippedWide = @($shippedRange | Where-Object { ('  ' + $_ + '. ' + [string]$rows[$_]).Length -gt $rowBudget -or [string]$rows[$_] -match "[`r`n]" })
+            Check ('menu: every shipped hook row 3..' + ($updateIndex - 1) + ' is one line <= ' + $rowBudget + ' columns') ($allShippedWide.Count -eq 0) ('too wide: ' + ($allShippedWide -join ','))
+            $staticWide = @(@(2, $updateIndex, $statusIndex, $uninstallIndex, $resetIndex, $relocateIndex) | Where-Object { ('  ' + $_ + '. ' + [string]$rows[$_]).Length -gt 90 -or [string]$rows[$_] -match "[`r`n]" })
+            Check 'menu: static row 2 and the 5 management rows are one line <= 90 columns' ($staticWide.Count -eq 0) ('too wide: ' + ($staticWide -join ','))
             foreach ($n in $newRowNumbers) {
                 $rendered = '  ' + $n + '. ' + [string]$rows[$n]
-                Check ('menu: row ' + $n + ' renders on exactly one line within the existing budget (' + $rowBudget + ')') (
+                Check ('menu: row ' + $n + ' renders on exactly one line within the budget (' + $rowBudget + ')') (
                     $rendered -notmatch "[`r`n]" -and $rendered.Length -le $rowBudget) ($rendered.Length.ToString() + ': ' + $rendered)
             }
         }

@@ -559,6 +559,17 @@ try {
     $r = Fire -Cwd $rustW -HookPath $ecoWriteHook
     Check 'a tracked lockfile and a complete Rust block -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
+    # V103: .cargo/ takes zero exceptions; /bin/ is a Rust output.
+    . (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks\Ignore-Rules-Check\_ecosystemignore.ps1')
+    $rustList = @($script:EcosystemIgnoreLists['Rust'])
+    Check 'V103 Rust list carries /bin/, /.cargo/ and **/.cargo/ with no cargo negation' ($rustList -contains '/bin/' -and $rustList -contains '/.cargo/' -and $rustList -contains '**/.cargo/' -and $rustList -notcontains '!/.cargo/config.toml' -and -not (@($rustList | Where-Object { $_ -like '!*' -or $_ -like '*credentials*' }).Count -gt 0)) ($rustList -join ' ')
+    $rustNeg = New-Repo 'eco-rust-negation'
+    [System.IO.File]::WriteAllText((Join-Path $rustNeg 'Cargo.toml'), "[package]`nname = `"x`"`n", $utf8)
+    [System.IO.File]::WriteAllText((Join-Path $rustNeg '.gitignore'), "/target/`n/.cargo/*`n!/.cargo/config.toml`n", $utf8)
+    $r = Fire -Cwd $rustNeg -EventName 'SessionStart'
+    Check 'V103 a Rust .gitignore negating .cargo/config.toml gets a non-blocking warning' ($r.Exit -eq 0 -and $r.Out -match '\.cargo/ takes zero exceptions' -and $r.Out -notmatch '"decision"\s*:\s*"block"') $r.Out
+    Check 'V103 a clean Rust project gets no .cargo warning' ($rustW -ne '' -and (Fire -Cwd $rustW -EventName 'SessionStart' -HookPath $ecoWriteHook).Out -notmatch 'zero exceptions') ''
+
     # =====================================================================
     # A session whose cwd drifted into a SUBFOLDER (2026-09-26, two projects):
     # the hook created logs\.gitignore with the whole rooted protected set while

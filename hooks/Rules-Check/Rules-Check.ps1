@@ -385,6 +385,10 @@ if (-not $firstRun) {
 . (Join-Path $PSScriptRoot '_languagechoice.ps1')
 $languageNote = Get-LanguageChoiceReminder -HookInput $hookInput -Client $Client -ProjectRoot $cwd -StateDir $stateDir -PolicyEntries $currentEntries
 
+$telegramNote = ''
+. (Join-Path $PSScriptRoot '_telegrambot.ps1')
+$telegramNote = Get-TelegramBotReminder -HookInput $hookInput -Client $Client -ProjectRoot $cwd -StateDir $stateDir
+
 $researchNote = ''
 if ($eventName -eq 'UserPromptSubmit' -and (Test-ExplicitResearchPrompt ([string](Get-Field $hookInput 'prompt')))) {
     $note = Get-ResearchWorkflowReminder
@@ -394,7 +398,7 @@ if ($eventName -eq 'UserPromptSubmit' -and (Test-ExplicitResearchPrompt ([string
 }
 
 # Nothing configured and nothing remembered -> silent, zero tokens.
-if ($firstRun -and $currentEntries.Count -eq 0 -and $languageNote -eq '' -and $researchNote -eq '') {
+if ($firstRun -and $currentEntries.Count -eq 0 -and $languageNote -eq '' -and $researchNote -eq '' -and $telegramNote -eq '') {
     exit 0
 }
 
@@ -437,7 +441,7 @@ if ($deepDebug -and $sessionId -ne '' -and (Test-Path -LiteralPath $ddStatePath 
 }
 
 $rulesMoved = ($firstRun -or $newFiles.Count -gt 0 -or $changedFiles.Count -gt 0 -or $removedFiles.Count -gt 0)
-if (-not $rulesMoved -and -not $deepDebug -and $languageNote -eq '' -and $researchNote -eq '') {
+if (-not $rulesMoved -and -not $deepDebug -and $languageNote -eq '' -and $researchNote -eq '' -and $telegramNote -eq '') {
     exit 0
 }
 
@@ -455,6 +459,7 @@ else {
 $lines = New-Object System.Collections.Generic.List[string]
 if ($languageNote -ne '') { [void]$lines.Add($languageNote) }
 if ($researchNote -ne '') { [void]$lines.Add($researchNote) }
+if ($telegramNote -ne '') { [void]$lines.Add($telegramNote) }
 if ($rulesMoved) {
     if ($firstRun) {
         [void]$lines.Add('RULES CHECK (' + $Client + '): first check; read FULL only the owners the router routes for THIS task; do not pre-read others:')

@@ -207,8 +207,8 @@ function Get-ExampleText {
 # internal name into the hyphenated display name, lives in _hooklib.ps1 so the
 # installer shares it.)
 $script:HookMeta = @{
-    'Ai-Memory-Check'                  = @{ Order = 2;  Label = 'Ai-Context-Check'; When = 'post'; Text = 'reminds to update the relevant .ai context files when stale' }
-    'Ai-Memory-Load'                   = @{ Order = 3;  Label = 'Ai-Context-Load';  When = 'pre';  Text = 'loads the .ai context router and file index before work starts' }
+    'Ai-Memory-Check'                  = @{ Order = 2;  Label = 'Ai-Context-Check'; When = 'post'; Text = 'reminds to update relevant .ai context files when stale' }
+    'Ai-Memory-Load'                   = @{ Order = 3;  Label = 'Ai-Context-Load';  When = 'pre';  Text = 'loads the .ai context router and file index before work' }
     # Exact workload: closed OS matrices/ordered steps or reviewed root tree OID;
     # private CiStatus input review survives updates, never substitutes for CI.
     # Reviewed inapplicable skips bind exact attempt/check IDs, not execution.
@@ -217,7 +217,7 @@ $script:HookMeta = @{
     'Dependabot-Check'                 = @{ Order = 5;  When = 'pre';  Text = 'reports pending Dependabot pull requests' }
     # Both advisory manifest scanners use bounded project-only discovery; partial
     # coverage is UNKNOWN. Their clients, events and registered timeouts stay fixed.
-    'Github-Baseline-Check'            = @{ Order = 6;  When = 'pre';  Text = 'checks the .github CI/dependabot baseline and the README badge set' }
+    'Github-Baseline-Check'            = @{ Order = 6;  When = 'pre';  Text = 'checks .github CI/dependabot setup and README badges' }
     'Git-Sync-Check'                   = @{ Order = 7;  When = 'both'; Text = 'checks remote sync, branch status and commit identity' }
     # Text kept deliberately short: with the '[pre+post-task]' tag and the
     # separators, the longer wording wrapped so only the tail of the last word
@@ -229,20 +229,20 @@ $script:HookMeta = @{
     # index. Both pairs stay live: every project carries BOTH graphs, and the
     # Cbm-* pair answers for code structure while the Graph-* pair answers for
     # what graphify alone covers and its cross-cutting views.
-    'Feature-Request-Check'            = @{ Order = 8;  When = 'both'; Text = 'a feature request runs the grilling chain, not straight to code'; Events = @('UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 45 }
+    'Feature-Request-Check'            = @{ Order = 8;  When = 'both'; Text = 'runs the grilling chain for feature requests'; Events = @('UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 45 }
     'Speckit-Check'                    = @{ Order = 9;  When = 'both'; Text = 'route the task through Spec Kit before writing code'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop'); Timeout = 45 }
     'Cbm-Read-Check'                   = @{ Order = 10; When = 'pre';  Text = 'query the Codebase Memory index before browsing files'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 30 }
     'Cbm-Update-Check'                 = @{ Order = 11; When = 'post'; Text = 'requires index_repository after 3+ edited files'; Events = @('Stop', 'SubagentStop'); Timeout = 45 }
     # PreToolUse holds a `git push` once for the review, so the docs land in
     # that one push; the migration table's v10 moves the old SessionStart+Stop.
     'Docs-Freshness-Check'             = @{ Order = 12;  When = 'both'; Text = 'checks tracked docs after changes; requires ack'; Events = @('SessionStart', 'PreToolUse', 'Stop') }
-    'Graph-Read-Check'                 = @{ Order = 13;  When = 'pre';  Text = 'suggests graphify queries when a graph exists and the task needs it' }
+    'Graph-Read-Check'                 = @{ Order = 13;  When = 'pre';  Text = 'suggests graphify queries when a graph fits the task' }
     'Graph-Update-Check'               = @{ Order = 14; When = 'post'; Text = 'requires graphify update after 3+ edited files' }
     'Large-File-Check'                 = @{ Order = 15; When = 'both'; Text = 'small-files policy + oversized-file scan' }
     # 'both', not 'pre': these three now VERIFY at Stop as well as remind at
     # the start. Closing findings default to advisory; explicit block settings remain.
-    'Mcp-Usage-Check'                  = @{ Order = 16; When = 'both'; Text = 'MCP and research-first reminders, and an "MCP used:" line at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Stop', 'SubagentStop'); Timeout = 30 }
-    'Rules-Check'                      = @{ Order = 17; When = 'both'; Text = 'routes rules and language choices; confirms rules at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 45 }
+    'Mcp-Usage-Check'                  = @{ Order = 16; When = 'both'; Text = 'MCP and research-first reminders; "MCP used:" at end'; Events = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Stop', 'SubagentStop'); Timeout = 30 }
+    'Rules-Check'                      = @{ Order = 17; When = 'both'; Text = 'routes rules and language choices; confirms at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 45 }
     # Skills-Check's real recommended EVENTS are SessionStart,UserPromptSubmit,Stop
     # (the Stop event carries the "Skills used:" summary requirement) - When must
     # be 'both', not 'pre' alone, or the menu tag disagrees with its actual timing.
@@ -251,9 +251,9 @@ $script:HookMeta = @{
     # 'both' (not 'pre+post') - Get-HookTimingTag's switch only recognizes
     # pre/post/both; an unrecognized value silently rendered NO timing tag at all.
     # Native checks share index inventory and emit only fixed real-phase progress.
-    'Ignore-Rules-Check'               = @{ Order = 20; When = 'both'; Text = 'auto-fixes required local/private gitignore rules before and after tasks' }
-    'Dependency-Version-Check'         = @{ Order = 21; When = 'both'; Text = 'flags outdated dependencies; requires a stated decision'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop') }
-    'Test-Temp-Cleanup'                = @{ Order = 22; When = 'both'; Text = 'reports test residue for review; never deletes files' }
+    'Ignore-Rules-Check'               = @{ Order = 20; When = 'both'; Text = 'fixes required local/private gitignore rules' }
+    'Dependency-Version-Check'         = @{ Order = 21; When = 'both'; Text = 'flags outdated deps; asks for a decision'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop') }
+    'Test-Temp-Cleanup'                = @{ Order = 22; When = 'both'; Text = 'reports test residue for review; deletes nothing' }
     # The three-stage test-health hooks (24.txt). Events/Timeout are the
     # CANONICAL per-hook values - Get-HookRecommendedEvents and the install call
     # read them from here, so name/order/timing/events/timeout cannot drift into
@@ -274,13 +274,13 @@ $script:HookMeta = @{
     # Disk/native copies share complete binary evidence and density-qualified
     # sparse-NUL decoding; Git octal paths keep exact exception identity.
     # BOM/text vetoes, caps, stage ordering and registered timeout are unchanged.
-    'Utf8-Encoding-Check'              = @{ Order = 26; When = 'both'; Text = 'strict streaming UTF-8; blocks invalid text and pushes'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 45 }
+    'Utf8-Encoding-Check'              = @{ Order = 26; When = 'both'; Text = 'strict UTF-8; blocks invalid text and pushes'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 45 }
     # Directly before Cloudflare-Deploy, per an explicit user requirement.
     # SessionStart loads the user's standing rules out of Synapse;
     # Stop/SubagentStop ask what this session should write back. NOT
     # UserPromptSubmit (the digest is a once-per-session read) and NOT
     # SessionEnd (by then the agent can no longer act on the answer).
-    'Synapse-Rules-Check'              = @{ Order = 27; When = 'both'; Text = 'requires a Synapse read before edits and a write-back at Stop'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 30 }
+    'Synapse-Rules-Check'              = @{ Order = 27; When = 'both'; Text = 'Synapse read before edits, write-back at Stop'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 30 }
     # Session-Summary-Check sits between Synapse-Rules-Check and
     # Cloudflare-Deploy per an explicit user requirement. That number is only
     # where it is LISTED. It is advisory and asks for the summary as the
@@ -290,7 +290,7 @@ $script:HookMeta = @{
     # always arrived as one more turn after the work, which is the loop it
     # shipped with twice. Stop events now OBSERVE only and return no output.
     # Recording must be registered too; the pre-task timing tag names speech.
-    'Session-Summary-Check'            = @{ Order = 28; When = 'pre'; Text = 'asks the closing reply for a done / still-open summary'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 30 }
+    'Session-Summary-Check'            = @{ Order = 28; When = 'pre'; Text = 'asks the final reply for a done / open summary'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 30 }
     # Cloudflare-Deploy is deliberately kept LAST among individual hook
     # entries (Order = highest value) per an explicit user requirement, not
     # filesystem/alphabetical order - see Test-Wizard.ps1 for the pinned order.
@@ -303,7 +303,7 @@ $script:HookMeta = @{
     # map, UserPromptSubmit names the skill for the typed language, Stop refuses
     # a reply language whose voice skill was never loaded.
     'Writing-Voice-Check'              = @{ Order = 30; When = 'both'; Text = 'requires the voice skill of the reply language'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 30 }
-    'Cloudflare-Deploy'                = @{ Order = 31; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
+    'Cloudflare-Deploy'                = @{ Order = 31; When = 'post'; Text = 'suggests Cloudflare deploys when release-ready' }
 }
 # The registration timeout an UPDATE must pass (spec 037 FR-037-08). Updates
 # reuse the recorded value, so a raised metadata timeout never reached a single

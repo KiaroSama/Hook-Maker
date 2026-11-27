@@ -409,5 +409,10 @@ function Get-SegmentPolicyWarnings {
     if ($program -eq 'rea-video' -and -not $inlineUtf8 -and $env:PYTHONIOENCODING -notmatch '(?i)^utf-?8') {
         return @([pscustomobject]@{ Key = 'rea-video-utf8'; Message = 'REA-VIDEO: shell lacks PYTHONIOENCODING=utf-8; set it or restart.' })
     }
+    $relBuild = (($program -eq 'cargo') -and ($sub -in @('build', 'b')) -and (@($rest | Where-Object { $_ -in @('--release', '-r') }).Count -gt 0))
+    $exeCopy = (($program -in @('cp', 'copy', 'copy-item', 'move', 'mv')) -and (($clean -join ' ') -match '(?i)target[\\/]release[\\/][^ ]*\.exe'))
+    if ($relBuild -or $exeCopy) {
+        return @([pscustomobject]@{ Key = 'local-release-build'; Message = 'BUILD: GitHub Actions CI builds releases; keep ONE binary in <project>/bin/.' })
+    }
     return @()
 }

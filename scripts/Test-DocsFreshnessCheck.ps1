@@ -241,6 +241,7 @@ try {
     Check 'V102 README freshness advisory notes live/tag-linked badges and Author -> License -> Donate order' (
         $r.Out -match 'live/tag-linked section-synced badges' -and $r.Out -match 'zero private-repo leak' -and
         $r.Out -match '## Author -> brief ## License -> ## Donate \(last\)') $r.Out
+    Check 'V103 docs freshness advisory names signed release assets' ($r.Out -match 'Release assets: signed binaries, SHA256SUMS, \.sig\.') $r.Out
     Check 'E-10: internal-only changes still clear via -Result NoUpdate (no churn requirement)' ($r.Out -match '-Result NoUpdate') $r.Out
 
     # =====================================================================

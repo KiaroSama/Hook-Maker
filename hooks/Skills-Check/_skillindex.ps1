@@ -15,7 +15,7 @@
 # $hasPluginRoot / $pluginRoot / $hasLibrary / $libraryDir / $stateDir and
 # $skillDiscovery (_skilldiscovery.ps1) from the caller's scope.
 
-# Index format. Flat lines, not JSON: ~1700 entries parse in milliseconds and the
+# Index format. Flat lines, not JSON: 1,735 entries parse in milliseconds and the
 # file is only ever produced and consumed here.
 #   header  HookMakerSkillsIndex|4|<configHash>|<builtUtcTicks>
 #   plugin  p|<plugin>|<folder>|<name>|<description>|<full path>|<source>|<version>|<status>|<explicit>|<invocation>
@@ -39,7 +39,7 @@ function ConvertTo-SkillIndexField {
 
 # The `name:` and `description:` of one SKILL.md, read from its FRONTMATTER only.
 # Bounded: frontmatter is at the top of the file, so a fixed prefix is read
-# rather than the whole document - this runs across ~1700 files on a cold index.
+# rather than the whole document - this runs across 1,735 files on a cold index.
 # A file that cannot be read contributes nothing and never throws.
 function Get-SkillIdentity {
     param([string]$SkillFile, [int]$MaxBytes = 4096)

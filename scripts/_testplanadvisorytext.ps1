@@ -60,3 +60,4 @@ foreach ($fact in $policyFacts) {
 Check 'both clients retain off-Stop context without systemMessage/block' (
     $rAdv.Out -match 'hookSpecificOutput' -and $rAdvCl.Out -match 'hookSpecificOutput' -and
     $rAdv.Out -notmatch 'systemMessage|"decision"' -and $rAdvCl.Out -notmatch 'systemMessage|"decision"') ($rAdv.Err + $rAdvCl.Err)
+Check 'V103 plan advisory names GitHub-only heavy/release builds and the single bin/ binary' ($msgAdv -match 'Heavy/release builds: GitHub Actions only' -and $msgAdv -match 'ONE binary in <project>/bin/') $msgAdv

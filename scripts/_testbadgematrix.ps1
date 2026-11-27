@@ -57,13 +57,31 @@ function Invoke-ReleaseMatrixRegression {
     $r = Fire -HookPath $BaselineHook -Cwd $repo
     Check 'release matrix: 32-bit, macOS and missing arm64 targets are named' ($r.Out -match 'RELEASE MATRIX' -and $r.Out -match 'release\.yml: 32-bit i686' -and $r.Out -match 'macOS macos-14' -and $r.Out -match 'no Windows arm64' -and $r.Out -match 'no Linux arm64') $r.Out
     Check 'release matrix: advisory only' ($r.Out -notmatch '"decision"') $r.Out
+    Check 'V103 release matrix: missing signed asset upload is named and the signed-release reminder is present' ($r.Out -match 'no signed asset upload' -and $r.Out -match 'ready-to-download signed binaries/archives for every matrix target plus SHA256SUMS, \.sig, and attestations') $r.Out
     $r = Fire -HookPath $BaselineHook -Cwd $repo
     Check 'release matrix: the same finding set is said once per project' ($r.Out -notmatch 'RELEASE MATRIX') $r.Out
 
     $repo = New-GitRepo 'matrix-good' -GithubRemote:$false
     $dir = Join-Path $repo '.github/workflows'; [void][IO.Directory]::CreateDirectory($dir)
-    [IO.File]::WriteAllText((Join-Path $dir 'release.yml'), "name: Release`non: workflow_dispatch`njobs:`n  build:`n    strategy:`n      matrix:`n        include:`n          - { os: windows-latest, target: x86_64-pc-windows-msvc }`n          - { os: windows-11-arm, target: aarch64-pc-windows-msvc }`n          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }`n          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }`n    runs-on: `${{ matrix.os }}`n", $utf8)
+    [IO.File]::WriteAllText((Join-Path $dir 'release.yml'), "name: Release`non: workflow_dispatch`njobs:`n  build:`n    strategy:`n      matrix:`n        include:`n          - { os: windows-latest, target: x86_64-pc-windows-msvc }`n          - { os: windows-11-arm, target: aarch64-pc-windows-msvc }`n          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }`n          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }`n    runs-on: `${{ matrix.os }}`n    steps:`n      - run: gh release upload `$TAG dist/* SHA256SUMS`n", $utf8)
     [IO.File]::WriteAllText((Join-Path $dir 'ci.yml'), "name: CI`non: workflow_dispatch`njobs:`n  t:`n    runs-on: macos-14`n", $utf8)
     $r = Fire -HookPath $BaselineHook -Cwd $repo
     Check 'release matrix: the default four targets -> silent; a non-release macOS CI job is not judged' ($r.Out -notmatch 'RELEASE MATRIX') $r.Out
+}
+
+function Invoke-GitleaksPushSkipRegression {
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    $cases = @(
+        @{ Name = 'gl-if'; Body = "name: Gitleaks`non:`n  push:`n  workflow_dispatch:`njobs:`n  gitleaks:`n    name: Gitleaks secret scan`n    if: github.event_name != 'push' || github.ref_name == github.event.repository.default_branch`n    runs-on: ubuntu-24.04`n"; Defect = $true },
+        @{ Name = 'gl-paths'; Body = "name: Gitleaks`non:`n  push:`n    paths:`n      - 'src/**'`n  workflow_dispatch:`njobs:`n  gitleaks:`n    runs-on: ubuntu-24.04`n"; Defect = $true },
+        @{ Name = 'gl-clean'; Body = "name: Gitleaks`non:`n  push:`n  pull_request:`n    paths:`n      - 'src/**'`n  workflow_dispatch:`njobs:`n  gitleaks:`n    name: Gitleaks secret scan`n    runs-on: ubuntu-24.04`n    steps:`n      - if: always()`n        run: echo scan`n"; Defect = $false }
+    )
+    foreach ($case in $cases) {
+        $repo = New-GitRepo $case.Name
+        $dir = Join-Path $repo '.github/workflows'; [void][IO.Directory]::CreateDirectory($dir)
+        [IO.File]::WriteAllText((Join-Path $dir 'gitleaks.yml'), $case.Body, $utf8)
+        $r = Fire -HookPath $BaselineHook -Cwd $repo
+        $hit = ($r.Out -match 'push-skip defect: Gitleaks secret scan \(push\) must run green, never skipped')
+        Check ('V103 gitleaks workflow ' + $case.Name + ': push-skip defect ' + $(if ($case.Defect) { 'flagged' } else { 'not flagged' })) ($hit -eq $case.Defect) $r.Out
+    }
 }

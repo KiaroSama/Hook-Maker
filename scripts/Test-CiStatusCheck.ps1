@@ -662,6 +662,7 @@ try {
     . (Join-Path $PSScriptRoot '_testciskipentry.ps1')
     . (Join-Path $PSScriptRoot '_testcistatusrunner.ps1')    # plan 046 items i and k
     . (Join-Path $PSScriptRoot '_testselfhostedrunners.ps1')
+    . (Join-Path $PSScriptRoot '_testcistatusv103.ps1')
 
     # =====================================================================
     if (Get-Command powershell.exe -ErrorAction SilentlyContinue) {

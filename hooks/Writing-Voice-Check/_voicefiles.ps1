@@ -83,3 +83,28 @@ function Get-VoiceArtifactLanguages {
     }
     return @($found)
 }
+
+# Self-contained Telegram bot context check so installed Writing-Voice-Check
+# never depends on sibling hook directories. Bounded to root manifests (<=64 KB).
+$script:VoiceTelegramPromptPattern = '(?i)telegram\s+bot|bot-clone|setMyCommands|BotCommandScopeChat|/language[^\r\n]{0,40}\bbot\b|telegram[^\r\n]{0,40}log\s+channel|sub-?user\s+bot'
+$script:VoiceTelegramDepPattern = '(?i)teloxide|telegraf|grammy|aiogram|python-telegram-bot|pyTelegramBotAPI|node-telegram-bot-api|Telegram\.Bot|telebot|BotCommandScopeChat|setMyCommands'
+function Test-VoiceTelegramBotContext {
+    param([AllowEmptyString()][string]$Prompt, [AllowEmptyString()][string]$ProjectRoot)
+    if (-not [string]::IsNullOrWhiteSpace($Prompt) -and $Prompt.Length -le 32768 -and ($Prompt -match $script:VoiceTelegramPromptPattern)) { return $true }
+    if ([string]::IsNullOrWhiteSpace($ProjectRoot) -or -not (Test-Path -LiteralPath $ProjectRoot -PathType Container)) { return $false }
+    $files = New-Object System.Collections.Generic.List[string]
+    foreach ($name in @('Cargo.toml', 'package.json', 'pyproject.toml', 'requirements.txt', 'go.mod')) {
+        $f = Join-Path $ProjectRoot $name
+        if (Test-Path -LiteralPath $f -PathType Leaf) { [void]$files.Add($f) }
+    }
+    try { foreach ($f in @([IO.Directory]::GetFiles($ProjectRoot, '*.csproj') | Select-Object -First 5)) { [void]$files.Add($f) } } catch { }
+    foreach ($f in $files) {
+        try {
+            $fs = [IO.File]::Open($f, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+            try { $buf = New-Object byte[] 65536; $n = $fs.Read($buf, 0, $buf.Length) } finally { $fs.Dispose() }
+            if ($n -gt 0 -and ([Text.Encoding]::UTF8.GetString($buf, 0, $n) -match $script:VoiceTelegramDepPattern)) { return $true }
+        }
+        catch { }
+    }
+    return $false
+}

@@ -81,6 +81,7 @@ if ($eventName -eq 'UserPromptSubmit') {
     $entry = $voiceMap[$language]
     $message = 'VOICE: reply in ' + $entry.Name + ' -> Skill `' + $entry.Key + '` before first sentence; reload after compaction.'
     if ($language -eq 'persian') { $message += ' ' + $note }
+    if ((Get-Command Test-VoiceTelegramBotContext -ErrorAction SilentlyContinue) -and (Test-VoiceTelegramBotContext -Prompt $prompt -ProjectRoot ([string](Get-Field $hookInput 'cwd')))) { $message += ' Telegram log channels stay English-only.' }
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $message
     exit $emit.ExitCode
 }

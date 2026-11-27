@@ -98,6 +98,23 @@ try {
     Invoke-AuditIndexRegression -Root (Split-Path -Parent $PSScriptRoot) -Work $Work
     . (Join-Path $PSScriptRoot '_testcompletiondelivery.ps1')
     Invoke-FailedDeliveryRegression -Root (Split-Path -Parent $PSScriptRoot) -Work $Work
+
+    Write-Host '--- V103: one canonical compiled binary in <project>/bin ---' -ForegroundColor Cyan
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'DupBinary'
+    [void][IO.Directory]::CreateDirectory((Join-Path $p 'bin')); [void][IO.Directory]::CreateDirectory((Join-Path $p 'target\release'))
+    [IO.File]::WriteAllText((Join-Path $p 'bin\app.exe'), 'x'); [IO.File]::WriteAllText((Join-Path $p 'target\release\app.exe'), 'x')
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok'
+    $r = Fire -Copy $c -Cwd $p
+    Check 'V103 a duplicate binary in target\release gets a non-blocking bin/ advisory' ($r.Exit -eq 0 -and $r.Out -match 'duplicate compiled binary: target\\\\release\\\\app\.exe' -and $r.Out -match 'ONE canonical copy ONLY in <project>/bin/' -and $r.Out -notmatch '"decision"\s*:\s*"block"') $r.Out
+    $r = Fire -Copy $c -Cwd $p
+    Check 'V103 the same duplicate set is said once' ($r.Exit -eq 0 -and $r.Out -notmatch 'duplicate compiled binary') $r.Out
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'SingleBinary'
+    [void][IO.Directory]::CreateDirectory((Join-Path $p 'bin')); [IO.File]::WriteAllText((Join-Path $p 'bin\app.exe'), 'x')
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok'
+    $r = Fire -Copy $c -Cwd $p
+    Check 'V103 a single canonical bin/ binary stays silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     . (Join-Path $PSScriptRoot '_testcompletiondisposition.ps1')
     Invoke-DispositionRegression -Root (Split-Path -Parent $PSScriptRoot)
     Invoke-DispositionEntryRegression

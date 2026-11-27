@@ -239,6 +239,8 @@ The refusal is `decision: block`, once per finding (session, language and compac
 
 **Written text.** The rule also covers files and commit/PR prose, whose language can differ from the reply's. At Stop it reads prose files written since the last compaction (`.md`, `.txt`, `.rst`, `.adoc`, `.html`, first 64 KB, code fences and inline code removed) and the message, title and body text of `git commit` and `gh pr|issue|release create|edit|comment` commands. A language found there whose skill was not loaded since that compaction gets one advisory per session and language set. Code files and `.ai/`, `.claude/`, `.codex/`, `.agents/` and `plans/` are not judged, and `Co-Authored-By:` trailers are ignored. It never blocks.
 
+**Telegram bot projects.** `/language` must exist for every bot role (admin, user, sub-user and sibling bots). Switching it updates both the `setMyCommands` slash commands (`BotCommandScopeChat`) and the menu surfaces at once, and menu layout and behavior stay identical across roles. Telegram log channels are English only.
+
 ## `Install-Location-Check`
 
 **Runs:** pre-task (PreToolUse).
@@ -248,6 +250,8 @@ Advisory only. Reads a shell command before it runs (the shared tokenizer, quote
 Each target (an explicit location option, the tool's own setting, or its default) is resolved to its physical path with junctions and symbolic links followed, on the target and on every parent. `uv tool install` and `uv python install` are judged on both the install directory and uv's executable directory (`UV_TOOL_BIN_DIR`/`UV_PYTHON_BIN_DIR`, else `XDG_BIN_HOME`, else `XDG_DATA_HOME\..\bin`, else `%USERPROFILE%\.local\bin`); `pip install --user` with an explicit interpreter uses `PYTHONUSERBASE` before `%APPDATA%\Python`; `PIP_TARGET`/`PIP_PREFIX` count as `--target`/`--prefix`. One line per package whose physical path is on the system drive and outside the project names the affected directories and prefers existing approved ecosystem roots/explicit overrides, else the configured non-system program root for a new workstation program; only unavailable/unsupported locations or genuine user decisions require a question. Location approval is not installation approval. Advice also covers physical consumer paths, project temp/cache before initialization and retaining obsolete copies until verified replacement. Two cases replace the question: a location variable the resolution reads that is missing from this process but set in the user environment (`HKCU\Environment`, read-only) - the line says to set it in the command because the shell predates it; and a CUDA installer run with `-s` - silent mode always installs on the system drive, so the line names the working route instead (the graphical Custom install through `explorer.exe`, Driver and NVIDIA App unticked, a toolkit major version matching the PyTorch build: cu128 -> 12.x, cu130/cu132 -> 13.x). Silent when the location is off the system drive, inside the project, already advised for that package this session, unrecognised, or unresolvable. The only processes it starts are two bounded read-only queries (`npm config get prefix`, `python -c` printing a prefix), cached per session.
 
 Never blocks, never approves (no `permissionDecision`), never rewrites. Rule: `global-environment-rules.md` → Install Locations. An interpreter named by an explicit path in the command is never executed: its install target is derived from where the file lives (a virtual environment's `Scripts` folder counts as its prefix; links are followed on the target); only a bare program name is queried, and it resolves through PATH like any command the user runs. Also warns once per session when `rust-anything setup` targets Claude (`--agent claude` or omitted `--agent`, which duplicates the `rust-anything@rust-anything` plugin; `rust-anything doctor` stays silent) or when `rea-video` runs without `PYTHONIOENCODING=utf-8`.
+
+**Local builds.** Heavy or release builds are banned locally: GitHub Actions CI is the only build route, unless the task approves a local build or CI is confirmed blocked by billing or quota. A final binary lives as one canonical `<project>/bin/<binary>.exe` (POSIX `<project>/bin/<binary>`), with no duplicate copies and every path, launcher and test wired to `bin/`. For waits, use the silent `jq` and `gh --jq` watcher.
 
 ## `Cloudflare-Deploy`
 
@@ -313,6 +317,8 @@ An actual prompt beginning with `::deep-research` receives phase-specific resear
 
 Both pre-task advisories also carry two fixed lines: route by each skill's own line in `global-skill-routing.md`, and security work enters at `security-audit`, never at a scanner. The Spec Kit line now states the mid-task intake contract: record the request delta with requirement IDs and acceptance criteria, update the affected spec, plan, tasks and skill selection, rerun the affected gates, and let only dependent work wait. New `.env` keys: `CLAUDE_PLUGINS_FILE`, `CLAUDE_SETTINGS_FILES`, `CLAUDE_DESKTOP_SKILLS_ROOT`, `CODEX_HOME_DIR`, `CODEX_SHARED_SKILLS_DIR`, `SKILL_RULES_DIR` (all defaulted).
 
+**Steering V103.** The inventory covers 41 live plugins, now including `revayat-scientific@revayat-scientific-skill` `2.2.3` (`revayat-scientific:revayat-scientific`, `translate-paper`, `revayat-scientific-qa`, `revayat-scientific-resume`). Updated pins: `revayat-subtitle:revayat-subtitle-sync` `3.0.3`, `telegram-operator:bot-clone` `1.6.0` (6 skills), `rust-anything` `5.0.1` (24 tools), `ffmpeg-skill` `4.20.2`, `hyperframes` `0.9.103`, `impeccable` `4.11.1`, `context-mode` `2.2.4`, `gpui-kit` `af829064d4d4`. The extra-skills library holds `1,735` bodies.
+
 ## `Mcp-Usage-Check`
 
 **Runs:** pre-task (SessionStart, UserPromptSubmit) + mid-turn (PreToolUse) + post-task (Stop, SubagentStop).
@@ -330,6 +336,8 @@ Relevant unquoted Scrapling/scraping, REA, Telegram, Context-mode, and Omniroute
 **Connector use triggers.** `UserPromptSubmit` classifies the prompt per session (up to 16 concurrent sessions, suppressing identical repeats) and adds one line, `CONNECTORS first: ...`, naming at most two fitting routes: porting, rewriting, or accelerating code into Rust (English or Persian) to `rust-anything` MCP with the `rust-anything:rust-anything` skill (`whole-app.md` for full apps); URL or web page to Scrapling-Server with `anthropic-skills:scrapling-official`; page debugging, performance or accessibility to chrome-devtools before Playwright; a dependency change to Snyk; security code to Semgrep; a library or API to Context7; "did we / what do I prefer" to Synapse `memory_retrieve`; Windows app control to Agent-Desktop; a code-structure question to Codebase-Memory-mcp; a video file to `rea-video:rea-video` and then `rea-video decompose`, not ffmpeg first. Text-only prompts name nothing. At Stop, when that session's prompt matched a trigger with no matching MCP call (or verified `rust-anything` CLI call for Rust ports) and no `MCP used: none - <reason>`, the hook blocks once per finding (`required-workflow`). Pairing and ordering advisories (`SCRAPLING:`, `PLAYWRIGHT:`, `RUST-ANYTHING:`, `DESKTOP ROUTE:`, `VOICE:`, and `REA-VIDEO:`) deliver mid-turn on `PreToolUse` as `additionalContext` (and once at Stop only if `PreToolUse` did not run), never blocking.
 
 Slint UI prompts, including `.slint` files, route to `slint:slint`, `slint-docs` (`search` then `fetch`), and `slint-preview` (`check_slint`). When `graphify-out/graph.json` exists, prompts asking about docs, Markdown, specs, cross-cutting architecture, or PR graph impact route to `Graphify-mcp` unless disabled locally. `PreToolUse` reminds the agent when it calls `slint-docs` or `slint-preview` before loading `slint:slint`, `Numera-Gen-mcp` before loading `numera-gen:numera-gen`, or `rust-anything` before loading `/rust-anything:rust-anything` (stating the V102 hard-stop gate: load the skill, MCP, and companion Rust skills first, do not proceed without it, and repair or stop for the user if unavailable mid-rewrite). Stop can report the same ordering once if the earlier reminder did not run. These pairings never block. Disabling `slint@slint` locally suppresses both `slint-docs` and `slint-preview`; disabling `Graphify-mcp` or `Numera-Gen-mcp` suppresses its route and pairing. The Claude PreToolUse matcher for new registrations covers both Slint connectors (`slint-docs` and `slint-preview`) and `Numera-Gen-mcp`. Existing registrations need the updated matcher for mid-turn delivery; the Stop fallback does not depend on that matcher.
+
+**Steering V103.** The connector map covers 20 live MCP connectors (13 top-level stdio servers and 7 plugin MCPs); the retired `Reddit` connector is gone. `Scrapling-Server` (with `anthropic-skills:scrapling-official`) comes first for web search, web fetch/crawl/extract and community, forum and Reddit lookups. `rust-anything` is `5.0.1` with `24` tools.
 
 ## `Large-File-Check`
 
@@ -417,6 +425,8 @@ The compatibility writer (called without `-RequireLatestStatus`) atomically reco
 
 Repository size alone is not a refusal. Bounded full-tree queries discover changed-path/basename references and indirect readers, including vendor/test paths. At most 100 relevant candidates and 1 MiB of inspected consumer text are admitted; each strict UTF-8 Git query has a 5-second/1-MiB ceiling inside the shared deadline, with one grep worker. Unknown reader scopes, embedded executable Markdown, semantic package/build/test inputs, decoding/query errors and exhausted bounds remain ineligible. Encoding-related words do not by themselves prove hygiene. Only fully validated Cargo.lock v3/v4 known-field data is excluded from executable-reader matches; unknown syntax/fields, literal changed-document references and actual walkers/copy/hash/semantic consumers remain unproven. This is not a lockfile or Markdown suffix exemption. A skipped commit that cannot establish eligibility names the limitation instead of suggesting that a nonexistent CI run will eventually appear. This is conservative static evidence, not a general-purpose reachability proof.
 
+**Silent waits and Gitleaks.** Waits for CI use the installed `jq` (`jq-1.8.2`, `G:\Program Files\jq\jq.exe`) with `gh --jq` in a silent background watcher. A `Gitleaks / Gitleaks secret scan (push)` run that concluded `skipped`, or a push-skipping `if:` or `paths:` in `.github/workflows/gitleaks.yml`, is a failing defect and a blocker, never green.
+
 ## `Github-Baseline-Check`
 
 **Runs:** pre-task (SessionStart).
@@ -433,6 +443,8 @@ Once per finding/session it names automatic ordinary project-CI initiating trigg
 
 **Badge format and release matrix.** The badge note also names format problems in the title badges: a missing mandatory badge by its reserved colour (language-version `8b5cf6`, platform `0891b2`, repo-size `ca8a04`), a donations badge that is not last, a badge URL that is neither plain flat-square `/badge/<label>-<value>-<hex>` nor a live GitHub dynamic endpoint with `style=flat-square&color=<hex>`, two badges sharing a colour, and a badge that links to its own image. Both `Github-Baseline-Check` and `Docs-Freshness-Check` note live/tag-linked section-synced badges (public dynamic endpoints vs private automated sync with zero private-repo leakage) and the mandatory README ending order `## Author` -> brief `## License` -> `## Donate` (last). Release workflows (file or `name:` says release, or a tag push) are checked against the default matrix: 32-bit targets, macOS targets and a missing Windows or Linux arm64 next to its x64 build are named once per finding set per project. Both are advisory, since an explicit user request can add macOS or 32-bit.
 
+**Gitleaks and releases.** A push-skipping `if:` or `paths:` in `.github/workflows/gitleaks.yml` is flagged. Reminder: every published GitHub Release of a compiled project attaches ready-to-download signed binaries or archives for every matrix target, plus `SHA256SUMS`, `.sig` files and attestations.
+
 ## `Rules-Check`
 
 **Runs:** pre-task (SessionStart, UserPromptSubmit) + post-task (Stop, SubagentStop).
@@ -446,6 +458,8 @@ Before the task it lists the rules that govern this project and asks for the min
 On `UserPromptSubmit`, a relevant new-project, language-choice, platform-boundary or explicit migration prompt also receives a context-only **language decision advisory**, even when rule files are unchanged. It routes to `global-architecture-rules.md` → Programming Language Selection and the scoped installed migration contracts; platform rows and explicit constraints override generic Rust-first. Existing narrow fixes stay in their current language; an unchanged assessment is reused and any actual migration/runtime/framework replacement needs separate approval. The same category/policy guidance is atomically suppressed per actor/session; no prompt text is persisted. No new Stop gate, denial, rewrite, toolchain install, permission change or migration is performed. English technical output and the user's reply-language policy remain distinct.
 
 An actual leading `::deep-research` on `UserPromptSubmit` also receives a bounded advisory pointing to `CODEWORDS.md` and `global-research-workflows.md`: finite budgets, primary bodies, independent sources/counterevidence, claim ledger and honest stopping. Repeated unchanged requests stay quiet; changed requests receive current guidance. Native slash commands and examples never become codeword execution; the hook runs no skill/job.
+
+**Telegram bot projects.** `/language` must exist for every bot role (admin, user, sub-user and sibling bots). Switching it updates both the `setMyCommands` slash commands (`BotCommandScopeChat`) and the menu surfaces at once, and menu layout and behavior stay identical across roles. Telegram log channels are English only.
 
 ## `Secrets-Check`
 
@@ -484,6 +498,8 @@ Native execution uses one checked root query and the index inventory (including 
 Ignore patterns harvested from the project's own rule files (AGENTS.md, CLAUDE.md and the agent rule folders) are tracked project text, so by default (`RULE_FILE_PATTERNS=advisory`) they are only reported, once per set - never written into `.gitignore` and never grounds for a push block; `write` adds them without protecting them, and `write-and-protect` restores the earlier behaviour. The built-in set and `EXTRA_PATTERNS` are unchanged.
 
 **Ecosystem blocks and lockfiles.** For each toolchain whose manifest sits in the root (Rust, Python, Node, .NET, C/C++, Go, Java/Kotlin, Swift, Dart) it compares `.gitignore` with that ecosystem's list from `global-ignore-rules.md`, counting `/target/` and `target/` as the same line. `ECOSYSTEM_PATTERNS=report` (default) only names missing lines; `write` appends them under one header and never deletes or reorders a line. A lockfile that is ignored, or present but untracked, is always named. This part never blocks and never runs on push.
+
+**Rust ignores.** Rust projects ignore `/.cargo/`, `**/.cargo/` and `/bin/`. There is no `!/.cargo/config.toml` exception: `.cargo/` is never tracked or pushed.
 
 ## `Dependency-Version-Check`
 
@@ -545,6 +561,8 @@ Token-efficient by design: a compact fingerprint (git state plus a signature of 
 
 An invalid value is reported once in plain text and the default is used: a malformed setting must never block or crash a session. PowerShell risk detection parses executable syntax: quoted samples and diagnostic strings are ignored, while quoted command invocations and executable interpolation remain visible. Oversized files, failed UTF-8 reads and unparseable PowerShell also make coverage partial. The advisory also states WHERE the heavy pass runs: every test that can run in GitHub CI runs there on the pushed commit, local execution stays in the light loop, a suite the workflow does not cover is fixed by extending the workflow rather than running it locally, and the local fallback needs a live `gh` query plus a timestamped record in project memory.
 
+**Local builds.** Heavy or release builds are banned locally: GitHub Actions CI is the only build route, unless the task approves a local build or CI is confirmed blocked by billing or quota. A final binary lives as one canonical `<project>/bin/<binary>.exe` (POSIX `<project>/bin/<binary>`), with no duplicate copies and every path, launcher and test wired to `bin/`. For waits, use the silent `jq` and `gh --jq` watcher.
+
 ## `Test-Run-Guard`
 
 
@@ -591,6 +609,8 @@ Without the distinction, a command that merely WROTE a file whose prose named a 
 Leading shell assignments (`CI=1 pytest ...`) are skipped when recognising the program and repeated in front of the printed replacement; a segment that is only assignments (`F=x.ps1; rm $F`) is never a command.
 
 **CI runner stops.** On PreToolUse a command that stops CI runners by name or wildcard - `taskkill /IM Runner.Listener.exe`, `Stop-Process -Name Runner*`, `Get-Process Runner* | Stop-Process`, `pkill`/`killall` naming `Runner.Listener`, `Runner.Worker` or `run.sh` (also behind `wsl.exe -e`/`--`), `Stop-Service`/`Restart-Service`/`sc.exe stop` with `actions.runner.*`, `systemctl stop 'actions.runner.*'` - is refused with the stop for THIS project's runner only (its `.ci-runner-win` processes, or a match against the exact project runner directory in WSL), because a by-name stop also stops every other project's runner and its job. A pid-based stop and this project's exact service name pass; `wsl --shutdown`/`--terminate` is advised against, never refused; a quoted string that only contains a runner name is data.
+
+**Local builds.** Heavy or release builds are banned locally: GitHub Actions CI is the only build route, unless the task approves a local build or CI is confirmed blocked by billing or quota. A final binary lives as one canonical `<project>/bin/<binary>.exe` (POSIX `<project>/bin/<binary>`), with no duplicate copies and every path, launcher and test wired to `bin/`. For waits, use the silent `jq` and `gh --jq` watcher.
 
 ## `Test-Completion-Check`
 
@@ -655,6 +675,8 @@ An unresolved negative result without a project fingerprint (the legacy shape) i
 
 Expected-negative runner fixtures remain failed child outcomes, not product failures exempted by exit code. The enclosing Guard suite isolates its nested state and restores the caller environment; old polluted receipts require explicit audited verification and association, never deletion or SUCCESS rewriting. See [fixture recovery](TEST-HOOK-RECOVERY.md#expected-negative-test-fixtures).
 
+**Local builds.** Heavy or release builds are banned locally: GitHub Actions CI is the only build route, unless the task approves a local build or CI is confirmed blocked by billing or quota. A final binary lives as one canonical `<project>/bin/<binary>.exe` (POSIX `<project>/bin/<binary>`), with no duplicate copies and every path, launcher and test wired to `bin/`. For waits, use the silent `jq` and `gh --jq` watcher.
+
 ## Complete project uninstall
 
 Complete removal also removes a selected Secrets/UTF-8 lifecycle hook's owned companion stage from the same project's native chain. The installer and native remover serialize on the wrapper, recheck ownership and preserve a verified recovery preimage until cleanup succeeds. Companion recovery leaves the active hooks directory before the shortened owner is committed; retirement failure retains tracking for retry. Supported install/uninstall operations share one registry-scoped lifecycle lock: an installer waits within the existing 120-second registry ceiling; a concurrent uninstall refuses before mutation and can be retried after the owner finishes. Other stages, their order and opaque user-hook bytes survive. A failed native cleanup retains tracking and cannot report complete success.
@@ -694,3 +716,5 @@ Acknowledgement is local-only state, never committed, and a later non-doc change
 ### Stop receipt provenance
 
 Closing evidence is scoped by work, actor and current answer; each concurrent gate invocation owns a completion token. Readiness covers discovered managed bindings only, not an inferred complete plugin/client configuration. Later verified evidence may settle an earlier unverified observation without another summary publication. See [receipt repair and acceptance](audits/2026-09-30-receipt-isolation.md) for the exact guarantees, bounded refusal behavior and live-client display boundary.
+
+**Releases.** Every published GitHub Release of a compiled project attaches ready-to-download signed binaries or archives for every matrix target, plus `SHA256SUMS`, `.sig` files and attestations.

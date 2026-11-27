@@ -35,6 +35,30 @@ function Invoke-SkillSurfaceRegression {
         $discovery.PluginsFile=$pluginsFile
         $answer=Invoke-SkillDiscovery $discovery
         Check 'manifest namespace is not replaced by registration alias' (@($answer.Skills |Where-Object {$_.Invocation -eq 'actual-namespace:published'}).Count -eq 1 -and @($answer.Skills |Where-Object {$_.Invocation -eq 'legacy-alias:published'}).Count -eq 0)
+        # V103 plugin set: dynamic discovery of new/updated plugin skills (skills only; commands are not skills).
+        $v103 = @(@('revayat-scientific','revayat-scientific-skill','2.2.3','revayat-scientific'), @('revayat-subtitle','revayat-subtitle-skill','3.0.3','revayat-subtitle-sync'), @('telegram-operator','telegram-operator','1.6.0','bot-clone'), @('rust-anything','rust-anything','5.0.1','rust-anything'))
+        $v103Plugins = @{}
+        foreach ($v in $v103) {
+            $vRoot = Join-Path $Work ('surface-v103-' + $v[0])
+            [void][IO.Directory]::CreateDirectory((Join-Path $vRoot ('skills/' + $v[3])))
+            [void][IO.Directory]::CreateDirectory((Join-Path $vRoot '.claude-plugin'))
+            Write-Utf8 (Join-Path $vRoot ('skills/' + $v[3] + '/SKILL.md')) ("---`nname: " + $v[3] + "`ndescription: fixture " + $v[3] + "`n---`nbody")
+            Write-Utf8 (Join-Path $vRoot '.claude-plugin/plugin.json') ('{"name":"' + $v[0] + '"}')
+            $v103Plugins[$v[0] + '@' + $v[1]] = @(@{scope='user';installPath=$vRoot;version=$v[2];lastUpdated='2026-11-27T00:00:00Z'})
+        }
+        foreach ($cmd in @('translate-paper','revayat-scientific-qa','revayat-scientific-resume')) {
+            [void][IO.Directory]::CreateDirectory((Join-Path $Work 'surface-v103-revayat-scientific/commands'))
+            Write-Utf8 (Join-Path $Work ('surface-v103-revayat-scientific/commands/' + $cmd + '.md')) ("---`ndescription: fixture " + $cmd + "`n---`nbody")
+        }
+        $v103File = Join-Path $Work 'surface-v103-installed.json'
+        Write-Utf8 $v103File (@{plugins=$v103Plugins} | ConvertTo-Json -Depth 6)
+        $discovery.PluginsFile = $v103File
+        $answer = Invoke-SkillDiscovery $discovery
+        foreach ($inv in @('revayat-scientific:revayat-scientific','revayat-subtitle:revayat-subtitle-sync','telegram-operator:bot-clone','rust-anything:rust-anything')) {
+            Check ('V103 plugin skill discovered: ' + $inv) (@($answer.Skills | Where-Object {$_.Invocation -eq $inv}).Count -eq 1)
+        }
+        Check 'V103 plugin commands are not discovered as skills' (@($answer.Skills | Where-Object {$_.Invocation -match 'translate-paper|revayat-scientific-qa|revayat-scientific-resume'}).Count -eq 0)
+        $discovery.PluginsFile = $pluginsFile
         $stamp = Get-SkillSourceStamp $discovery
         Write-Utf8 (Join-Path $newRoot 'owner/session/manifest.json') '{"skills":[{"name":"translate-programming-language","enabled":false}]}'
         $answer = Invoke-SkillDiscovery $discovery

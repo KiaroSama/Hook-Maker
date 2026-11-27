@@ -490,6 +490,7 @@ $lines = New-Object System.Collections.Generic.List[string]
 [void]$lines.Add('- Workers max(2,min(8,cores-2)); no nesting; reap owned tree/temp/state.')
 [void]$lines.Add('- Discover suites dynamically; map every suite to CI; CPU!=hang (kill on bound/stall).')
 [void]$lines.Add('- Edits: light checks; final: one pushed-SHA CI batch (local fallback only if gh/CI blocked in .ai/TESTING_NOTES.md).')
+[void]$lines.Add('- Heavy/release builds: GitHub Actions only (no local cargo build --release/target/ without task approval or CI billing block); ONE binary in <project>/bin/.')
 [void]$lines.Add('- Optimization needs before/after timings in .ai/TESTING_NOTES.md; bg needs PID+start + reaper.')
 if ($deepDebug) {
     # E-03: the standalone ::deep-debug codeword was detected in the prompt.

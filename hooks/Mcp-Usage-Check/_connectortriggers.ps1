@@ -5,7 +5,7 @@
 # connector that fits the job is the FIRST route, and an unused fitting
 # connector is a violation. The hook cannot see which connectors a client has
 # exposed, so it names the conventional route per prompt class in ONE line and
-# never lists the whole inventory. Order matters: the first two matches win.
+# never lists the whole inventory. Order matters: the first two matches win (web/community first).
 # Matching is on the user's prompt text only; tool calls are matched later as
 # JSONL tool-call records, never as prose mentions.
 
@@ -20,7 +20,9 @@ $script:FaRustPortPattern = '(?:' +
 
 $script:SlintRoute = '.slint UI -> slint:slint + slint-docs (search/fetch) + slint-preview (check_slint)'
 $script:ConnectorTriggers = @(
-    @{ Key = 'rust-anything'; Connector = 'rust-anything'; Route = 'Rust port/rewrite -> rust-anything MCP + skill rust-anything:rust-anything (whole-app.md for full apps)'
+    @{ Key = 'web'; Connector = 'Scrapling-Server'; Route = 'web search/fetch/crawl/community/Reddit -> Scrapling-Server + skill anthropic-skills:scrapling-official'
+       Pattern = '(?i)(https?://|\bwww\.|\b(web ?page|website|scrape|scraping|crawl\w*|reddit|subreddit|forum)\b|\bweb[ \t]+(?:search|fetch|crawl|scrape|extract)\w*|\bcommunity[ \t]+(?:lookup|discussion|thread|search)\b)' }
+    @{ Key = 'rust-anything'; Connector = 'rust-anything'; Route = 'Rust port/rewrite -> rust-anything MCP + skill rust-anything:rust-anything (whole-app.md for full apps; 5.0.1/24 tools)'
        Pattern = ('(?i)(\brust-anything\b|\b(?:port\w*|rewrit\w*|migrat\w*|convert\w*|translat\w*|accelerat\w*|speed[ \t]+up)\b[^\r\n]{0,80}\b(?:to|in|into)[ \t]+rust\b|\brust[ \t]+(?:port|rewrite|migration)\b|' + $script:FaRustPortPattern + ')') }
     @{ Key = 'video'; Connector = ''; Route = 'video file -> rea-video:rea-video skill, then rea-video decompose (not ffmpeg first)'
        Pattern = '(?i)(\.(mp4|mkv|mov|avi|webm|m4v)\b|\bvideos?\b|\bclip\b|\u0648\u06cc\u062f\u06cc\u0648|\u0648\u06cc\u062f\u0626\u0648|\u0641\u06cc\u0644\u0645)' }
@@ -30,8 +32,6 @@ $script:ConnectorTriggers = @(
        Pattern = '(?i)(\.slint(?![\w-]|\.[\w.-])|\bslint[ \t]+(?:ui|gui|layout|widgets?|components?)\b)' }
     @{ Key = 'page'; Connector = 'chrome-devtools'; Route = 'page debugging/perf/a11y -> chrome-devtools before Playwright'
        Pattern = '(?i)\b(console errors?|devtools|lighthouse|core web vitals|a11y|accessibility audit|page (?:perf|performance|load|debug\w*)|network tab)\b' }
-    @{ Key = 'web'; Connector = 'Scrapling-Server'; Route = 'URL/web page -> Scrapling-Server + skill anthropic-skills:scrapling-official'
-       Pattern = '(?i)(https?://|\bwww\.|\b(web ?page|website|scrape|scraping|crawl\w*)\b)' }
     @{ Key = 'dep'; Connector = 'Snyk'; Route = 'dependency/package change -> Snyk (snyk_package_health_check, SCA)'
        Pattern = '(?i)\b(add|install|upgrade|bump|update|remove|pin)\b[^.\n]{0,40}\b(dependenc\w*|package|crate|npm|pip|nuget|library)\b' }
     @{ Key = 'security'; Connector = 'Semgrep'; Route = 'security code -> Semgrep'
@@ -126,7 +126,7 @@ $script:CloudflareSkillPattern = '(?i)("skill"[ \t]*:[ \t]*"cloudflare:[A-Za-z0-
 $script:NoteScrapling = 'SCRAPLING: called before skill anthropic-skills:scrapling-official; load it first.'
 $script:NotePlaywright = 'PLAYWRIGHT: no chrome-devtools call; devtools first, else state why.'
 $script:NoteReaVideo = 'REA-VIDEO: shell lacks PYTHONIOENCODING=utf-8; set it or restart.'
-$script:NoteRustAnything = 'RUST-ANYTHING: hard-stop gate; load /rust-anything:rust-anything (whole-app.md for full apps) + MCP + companion Rust skills first. Do not proceed without it; repair or stop for the user if unavailable mid-rewrite.'
+$script:NoteRustAnything = 'RUST-ANYTHING: hard-stop gate (5.0.1/24 tools); load /rust-anything:rust-anything (whole-app.md for full apps) + MCP + companion Rust skills first. Do not proceed without it; repair or stop for the user if unavailable mid-rewrite.'
 $script:NoteCloudflare = 'CLOUDFLARE: called before matching cloudflare:* skill; load it first (cloudflare:turnstile-spin for Turnstile).'
 $script:NoteSlint = 'SLINT: load slint:slint before slint-docs/slint-preview.'
 $script:NoteNumera = 'NUMERA GEN: load numera-gen:numera-gen before Numera-Gen-mcp.'

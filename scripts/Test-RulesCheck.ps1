@@ -570,6 +570,23 @@ try {
     $r = Fire -Cwd $languageProj -Claude $false -RawStdin (New-PromptStdin $languageProj 'Choose a language for Web UI' 'language-codex')
     Check 'Codex language reminder keeps context-only shape' ($r.Exit -eq 0 -and $r.Out -match 'LANGUAGE:' -and $r.Out -notmatch '"decision"') $r.Out
 
+    Write-Host '--- V103: Telegram bot advisory ---' -ForegroundColor Cyan
+    $tgPrompt = [IO.Path]::Combine($Work, 'tg-prompt'); [void][IO.Directory]::CreateDirectory($tgPrompt)
+    $tgManifest = [IO.Path]::Combine($Work, 'tg-manifest'); [void][IO.Directory]::CreateDirectory($tgManifest)
+    [IO.File]::WriteAllText((Join-Path $tgManifest 'Cargo.toml'), "[dependencies]`nteloxide = ""0.13""`n")
+    $tgPlain = [IO.Path]::Combine($Work, 'tg-plain'); [void][IO.Directory]::CreateDirectory($tgPlain)
+    [IO.File]::WriteAllText((Join-Path $tgPlain 'Cargo.toml'), "[dependencies]`nserde = ""1""`n")
+    foreach ($d in @($tgPrompt, $tgManifest, $tgPlain)) { $null = Fire -Cwd $d }
+    $r = Fire -Cwd $tgPrompt -RawStdin (New-PromptStdin $tgPrompt 'Add /language to the Telegram bot sub-user bot' 'tg-prompt-1')
+    $ctx = Get-AdditionalContext $r.Out
+    Check 'V103 Telegram prompt emits the bot advisory' ($r.Exit -eq 0 -and $ctx -match 'TELEGRAM BOT:' -and $ctx -match 'setMyCommands' -and $ctx -match 'English-only' -and $r.Out -notmatch '"decision"') $r.Out
+    $r = Fire -Cwd $tgPrompt -RawStdin (New-PromptStdin $tgPrompt 'Add /language to the Telegram bot sub-user bot' 'tg-prompt-1')
+    Check 'V103 Telegram advisory is quiet on a repeat in the same session' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -Cwd $tgManifest -RawStdin (New-PromptStdin $tgManifest 'Fix the parser' 'tg-manifest-1')
+    Check 'V103 Telegram manifest dependency emits the advisory' ($r.Exit -eq 0 -and (Get-AdditionalContext $r.Out) -match 'TELEGRAM BOT:') $r.Out
+    $r = Fire -Cwd $tgPlain -RawStdin (New-PromptStdin $tgPlain 'Fix the parser' 'tg-plain-1')
+    Check 'V103 non-Telegram project stays silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
     # =====================================================================
     Write-Host '--- E-01: static safety + installed-runtime parity ---' -ForegroundColor Cyan
     # The hook only REFERENCES native commands as text; it must never gain an

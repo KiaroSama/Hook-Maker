@@ -213,7 +213,7 @@
     }
 
     $ciPlan=@(Get-InstallPlanFor -HookScript (Join-Path $RealHooksDir 'Ci-Status-Check/Ci-Status-Check.ps1') -ToolRoot $ToolRoot)
-    foreach($leaf in @('_cipagination.ps1','_civisibility.ps1','_ciauxiliary.ps1')){
+    foreach($leaf in @('_cipagination.ps1','_civisibility.ps1','_ciauxiliary.ps1','_cigitleaks.ps1')){
         Check ('CI collection/visibility helper ships immutable '+$leaf) (@($ciPlan|Where-Object{$_.relativePath-ceq('Ci-Status-Check/'+$leaf)-and$_.ownership-ceq'Immutable'}).Count-eq1)
     }
     $missingCi=Join-Path $Work 'missing-ci-collection-source'
