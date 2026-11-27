@@ -3,7 +3,15 @@
 $mockDir=$env:GH_MOCK_DIR
 if(-not$mockDir){exit 1}
 $a=@($args)
-Add-Content -LiteralPath (Join-Path $mockDir 'calls.txt') -Value ($a-join'|') -Encoding UTF8
+$callsPath=Join-Path $mockDir 'calls.txt'
+$callBytes=[Text.Encoding]::UTF8.GetBytes(($a-join'|')+"`r`n")
+for($try=0;$try-lt20;$try++){
+    try{
+        $fs=[IO.File]::Open($callsPath,[IO.FileMode]::Append,[IO.FileAccess]::Write,[IO.FileShare]::Read)
+        try{$fs.Write($callBytes,0,$callBytes.Length)}finally{$fs.Dispose()}
+        break
+    }catch{Start-Sleep -Milliseconds 25}
+}
 function Emit-File {param($Path) Write-Output ([IO.File]::ReadAllText($Path,[Text.Encoding]::UTF8));exit 0}
 if($a.Count-ge2-and$a[0]-eq'auth'-and$a[1]-eq'status'){
     $f=Join-Path $mockDir 'auth_exit.txt';$code=if(Test-Path $f){[int]([IO.File]::ReadAllText($f).Trim())}else{0}
